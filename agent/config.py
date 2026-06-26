@@ -98,6 +98,8 @@ PERSISTED_SKILLS_ROOT = "/persisted-skills"
 SKILLS_STORE_NAMESPACE = ("skills",)
 SCOPE_MAP = {
     "main": "main",
-    "procurement-analyst": "procurement",
-    "procurement-order": "order",
+    "car-agent": "car",
+    "flights-agent": "flights",
+    "hotels-agent": "hotels",
+    "trip-agent": "trip"
 }
