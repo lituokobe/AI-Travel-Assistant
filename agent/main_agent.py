@@ -5,8 +5,10 @@ from deepagents.backends import CompositeBackend, StoreBackend
 from langchain_core.runnables import RunnableConfig
 
 from agent.backends.sandbox_setup import setup_sandbox
-from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR
+from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL
 from agent.logger import logger
+from agent.middleware_config import create_analyst_middleware, create_order_middleware
+from agent.subagents.loader import load_subagent_configs
 from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
 from agent.tools.hitl_tools import request_travel_info
@@ -145,9 +147,9 @@ async def create_main_agent(
     logger.info("Phase 6/10: Load Agent YAML...")
     raw_configs = load_subagent_configs()
     if not raw_configs:
-        logger.warning("  未找到任何子 Agent 配置，Agent 将在无子 Agent 模式下运行")
+        logger.warning("  No configurations of Sub-Agent found, Agent will run without Sub-Agent")
     else:
-        logger.info(f"  已加载 {len(raw_configs)} 个子 Agent 配置")
+        logger.info(f"  {len(raw_configs)} configurations of Sub-Agent loaded")
 
     # ---- Phase 7: subagents' middleware ----
     logger.info("Phase 7/10: subagents' middleware...")

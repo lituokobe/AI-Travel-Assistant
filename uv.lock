@@ -25,6 +25,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "opensandbox" },
     { name = "pytz" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -41,6 +42,7 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.2.6" },
     { name = "opensandbox", specifier = ">=0.1.12" },
     { name = "pytz", specifier = ">=2026.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
 [[package]]

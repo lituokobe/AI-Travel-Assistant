@@ -15,4 +15,5 @@ dependencies = [
     "opensandbox>=0.1.12",
     "pytz>=2026.2",
     "langchain-tavily>=0.2.18",
+    "pyyaml>=6.0.3",
 ]
