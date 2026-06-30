@@ -1,9 +1,14 @@
 """
-摘要中间件工厂
-基于 DeepAgents 0.4 内置的 create_summarization_tool_middleware 创建，
-提供以下能力：
-1. 自动摘要：上下文接近模型上限时自动压缩历史消息。
-2. 主动摘要：提供 compact_conversation 工具，Agent 可在关键节点（如收到子 Agent 报告后）主动调用。
+Summarization middleware factory.
+
+Built on DeepAgents' built-in create_summarization_tool_middleware,
+providing the following capabilities:
+
+1. Automatic summarization: Automatically compresses conversation history when
+   the context approaches the model's context window limit.
+2. On-demand summarization: Provides the compact_conversation tool, allowing
+   the Agent to proactively summarize the conversation at key points (such as
+   after receiving reports from sub-agents).
 """
 
 from typing import Union
@@ -16,28 +21,36 @@ from deepagents.backends import CompositeBackend
 
 def build_summarization_middleware(
     backend: CompositeBackend,
-    model: Union[str, BaseChatModel] = "gpt-4o-mini",
+    model: str | BaseChatModel,
 ) -> SummarizationToolMiddleware:
     """
-    构建摘要工具中间件。
+    Build the summarization tool middleware.
 
-    该中间件是一个 SummarizationToolMiddleware 实例，内部自动包含了一个
-    SummarizationMiddleware（负责自动摘要），并额外提供了一个名为
-    `compact_conversation` 的工具，供 Agent 主动触发对话压缩。
+    This middleware is a SummarizationToolMiddleware instance. Internally, it
+    automatically includes a SummarizationMiddleware (responsible for automatic
+    summarization) and additionally provides a tool named
+    `compact_conversation`, which the Agent can invoke to proactively compress
+    the conversation.
 
-    参数:
-        backend: 沙箱后端（用于持久化被压缩的完整对话历史）。
-        model: 用于生成摘要的模型，可以是字符串标识或模型实例。
-               建议使用轻量、便宜的模型以节省成本（如 "gpt-4o-mini"）。
+    Args:
+        backend: Sandbox backend used to persist the full conversation history
+            that has been summarized.
+        model: Model used to generate summaries. This can be either a model
+            identifier string or a model instance. It is recommended to use a
+            lightweight, low-cost model (such as "gpt-4o-mini") to reduce cost.
 
-    返回:
-        SummarizationToolMiddleware: 可直接传入 create_deep_agent 的 middleware 列表。
+    Returns:
+        SummarizationToolMiddleware: Can be passed directly to the middleware
+        list of create_deep_agent.
 
     """
-    # 该工厂函数会自动创建一个 SummarizationMiddleware 并将其嵌入到
-    # SummarizationToolMiddleware 中。触发阈值等参数使用框架默认值，
-    # 通常为上下文达到 85% 时触发自动摘要，这已满足多数生产场景。
+    # This factory function automatically creates a SummarizationMiddleware
+    # and embeds it into the SummarizationToolMiddleware. Parameters such as
+    # the summarization trigger threshold use the framework defaults, which
+    # typically trigger automatic summarization when the context reaches 85%
+    # of the available context window. This is suitable for most production
+    # scenarios.
     return create_summarization_tool_middleware(
         model=model,
-        backend=backend,
+        backend=backend
     )

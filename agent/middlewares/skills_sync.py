@@ -1,59 +1,61 @@
-# src/middleware/skills_sync.py
 """
-技能同步中间件
+Skill synchronization middleware.
 
-在每个 Agent 运行周期开始前，将本地 src/skills/ 下的技能文件与沙箱同步。
-检测到变化时，向对话中插入系统通知，提醒 Agent 有新技能可用。
+Before each Agent execution cycle, synchronizes skill files under the local
+src/skills/ directory with the sandbox. If any changes are detected, a system
+notification is inserted into the conversation to inform the Agent that new
+skills are available.
 """
+
 from __future__ import annotations
+
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
-
-from deepagents.backends.sandbox import BaseSandbox  # 使用通用的沙箱后端协议
-
-from OpenClaw_project.src.agent.config import LOCAL_SKILLS_DIR, SANDBOX_SKILLS_ROOT
+from deepagents.backends.sandbox import BaseSandbox  # Uses the generic sandbox backend interface.
+from agent.config import LOCAL_SKILLS_DIR, SANDBOX_SKILLS_ROOT
 
 
 class SkillsSyncMiddleware(AgentMiddleware):
-    """技能文件同步中间件，依赖沙箱后端的文件操作能力。"""
+    """Middleware for synchronizing skill files, relying on the sandbox backend's file operations."""
 
     def __init__(self, backend: BaseSandbox) -> None:
         super().__init__()
         self.backend = backend
-        # 缓存本地文件哈希，避免重复同步
-        self._last_hashes: Dict[str, str] = {}
+        # Cache local file hashes to avoid unnecessary synchronization.
+        self._last_hashes: dict[str, str] = {}
 
-    # --------------------- 钩子 ---------------------
-    def before_agent(self, state: Dict[str, Any], runtime: Any) -> Optional[Dict[str, Any]]:
+    # --------------------- Hooks ---------------------
+    def before_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
         new_skills = self._sync_files()
         if new_skills:
             return self._make_notification(new_skills)
         return None
 
-    async def abefore_agent(self, state: Dict[str, Any], runtime: Any) -> Optional[Dict[str, Any]]:
+    async def abefore_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
         import asyncio
+
         loop = asyncio.get_running_loop()
         new_skills = await loop.run_in_executor(None, self._sync_files)
         if new_skills:
             return self._make_notification(new_skills)
         return None
 
-    # --------------------- 文件同步 ---------------------
-    def _sync_files(self) -> List[str]:
-        """扫描本地技能目录，将新增/修改的文件上传到沙箱。
+    # --------------------- File Synchronization ---------------------
+    def _sync_files(self) -> list[str]:
+        """Scan the local skills directory and upload new or modified files to the sandbox.
 
         Returns:
-            发生变化的技能名称列表。
+            A list of skill names that have been updated.
         """
         local_skills_dir = Path(LOCAL_SKILLS_DIR)
         if not local_skills_dir.exists():
             return []
 
-        updated_skills: List[str] = []
+        updated_skills: list[str] = []
 
         for skill_dir in local_skills_dir.iterdir():
             if not skill_dir.is_dir():
@@ -61,7 +63,7 @@ class SkillsSyncMiddleware(AgentMiddleware):
             skill_name = skill_dir.name
             sandbox_skill_dir = f"{SANDBOX_SKILLS_ROOT}/{skill_name}"
 
-            files_to_upload: List[Tuple[str, bytes]] = []
+            files_to_upload: list[tuple[str, bytes]] = []
             has_changes = False
 
             for local_file in skill_dir.rglob("*"):
@@ -75,11 +77,11 @@ class SkillsSyncMiddleware(AgentMiddleware):
                 local_hash = hashlib.md5(local_content).hexdigest()
                 cache_key = f"{skill_name}/{relative_path}"
 
-                # 本地哈希未变，跳过
+                # Local file hash unchanged; skip.
                 if self._last_hashes.get(cache_key) == local_hash:
                     continue
 
-                # 对比沙箱文件（先 test -f 避免 download_files 对 404 打 ERROR）
+                # Compare with the sandbox file (use test -f first to avoid download_files logging a 404 ERROR).
                 check = self.backend.execute(f"test -f {sandbox_path}")
                 if check.exit_code == 0:
                     try:
@@ -93,7 +95,7 @@ class SkillsSyncMiddleware(AgentMiddleware):
                                 self._last_hashes[cache_key] = local_hash
                                 continue
                     except Exception:
-                        pass  # 读取失败，需要上传
+                        pass  # Failed to read the remote file; upload is required.
 
                 files_to_upload.append((sandbox_path, local_content))
                 self._last_hashes[cache_key] = local_hash
@@ -105,11 +107,12 @@ class SkillsSyncMiddleware(AgentMiddleware):
 
         return updated_skills
 
-    # --------------------- 通知生成 ---------------------
-    def _make_notification(self, skill_names: List[str]) -> Dict[str, Any]:
+    # --------------------- Notification Generation ---------------------
+    @staticmethod
+    def _make_notification(skill_names: list[str]) -> dict[str, Any]:
         skills_list = "\n".join(f"- {name}" for name in skill_names)
         notice = (
-            f"[系统通知] 以下技能包已更新：\n{skills_list}\n"
-            "请使用 `ls /skills/` 查看详情，对当前任务可能有帮助。"
+            f"[System Notification] The following skill packages have been updated:\n{skills_list}\n"
+            "Please use `ls /skills/` to view the details. They may be helpful for the current task."
         )
         return {"messages": [SystemMessage(content=notice)]}

@@ -16,4 +16,5 @@ dependencies = [
     "pytz>=2026.2",
     "langchain-tavily>=0.2.18",
     "pyyaml>=6.0.3",
+    "pymongo>=4.17.0",
 ]

@@ -1,39 +1,39 @@
-# src/middlewares/user_skills_restore.py
 """
-技能恢复中间件
+User skills restoration middleware.
 
-在每个 Agent 运行周期开始前，将 StoreBackend 中持久化的技能
-恢复到沙箱 /skills/{scope}/{skill_name}/ 路径下，使子 Agent 可以通过
-渐进式披露发现和使用。
+Before each Agent execution cycle, restores skills persisted in the StoreBackend
+to the sandbox under /skills/{scope}/{skill_name}/ so that sub-agents can
+discover and use them through progressive disclosure.
 
-与 SkillsSyncMiddleware 分工：
-  - SkillsSyncMiddleware: 本地 src/skills/ → 沙箱（预置技能）
-  - UserSkillsRestoreMiddleware: StoreBackend → 沙箱（持久化技能）
+Responsibilities compared with SkillsSyncMiddleware:
+
+- SkillsSyncMiddleware: Local src/skills/ → Sandbox (built-in skills)
+- UserSkillsRestoreMiddleware: StoreBackend → Sandbox (persisted user skills)
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 
 
 class UserSkillsRestoreMiddleware(AgentMiddleware):
-    """从 StoreBackend 恢复持久化技能到沙箱的中间件。"""
+    """Middleware for restoring persisted skills from the StoreBackend to the sandbox."""
 
     def __init__(self, backend, skills_namespace) -> None:
         """
         Args:
-            backend: OpenSandboxBackend 实例，负责文件上传。
-            skills_namespace: StoreBackend 中技能的命名空间元组。
+            backend: An OpenSandboxBackend instance responsible for uploading files.
+            skills_namespace: The namespace tuple used for skills in the StoreBackend.
         """
         super().__init__()
         self.backend = backend
         self.namespace = skills_namespace
 
     async def abefore_agent(
-        self, state: Dict[str, Any], runtime: Any
-    ) -> Optional[Dict[str, Any]]:
-        """运行前：从 StoreBackend 读取持久化技能，上传到沙箱。"""
+        self, state: dict[str, Any], runtime: Any
+    ) -> dict[str, Any] | None:
+        """Before execution: read persisted skills from the StoreBackend and upload them to the sandbox."""
         store = runtime.store
         files = await self._collect_skills(store)
         if files:
@@ -41,23 +41,23 @@ class UserSkillsRestoreMiddleware(AgentMiddleware):
         return None
 
     def before_agent(
-        self, state: Dict[str, Any], runtime: Any
-    ) -> Optional[Dict[str, Any]]:
-        """同步版本：不执行操作（技能恢复仅支持异步）。"""
+        self, state: dict[str, Any], runtime: Any
+    ) -> dict[str, Any] | None:
+        """Synchronous version: no operation (skill restoration is supported only in the asynchronous version)."""
         return None
 
-    # --------------------- 内部方法 ---------------------
-    async def _collect_skills(self, store) -> List[Tuple[str, bytes]]:
+    # --------------------- Internal Methods ---------------------
+    async def _collect_skills(self, store) -> list[tuple[str, bytes]]:
         """
-        从 StoreBackend 收集所有持久化技能文件。
+        Collect all persisted skill files from the StoreBackend.
 
-        StoreBackend key 格式: /{scope}/{skill_name}/...
-        沙箱目标路径: /skills/{scope}/{skill_name}/...
+        StoreBackend key format: /{scope}/{skill_name}/...
+        Sandbox destination path: /skills/{scope}/{skill_name}/...
 
         Returns:
-            (沙箱路径, 文件内容字节) 的列表。
+            A list of (sandbox_path, file_content_bytes) tuples.
         """
-        files: List[Tuple[str, bytes]] = []
+        files: list[tuple[str, bytes]] = []
 
         try:
             items = await store.asearch(self.namespace)
@@ -67,8 +67,8 @@ class UserSkillsRestoreMiddleware(AgentMiddleware):
         for item in items:
             key = str(item.key).lstrip("/")
 
-            # key 格式: {scope}/{skill_name}/...
-            # 映射到: /skills/{scope}/{skill_name}/...
+            # Key format: {scope}/{skill_name}/...
+            # Mapped to: /skills/{scope}/{skill_name}/...
             parts = key.split("/", 1)
             if len(parts) != 2:
                 continue

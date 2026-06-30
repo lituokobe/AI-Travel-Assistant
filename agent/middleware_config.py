@@ -13,9 +13,9 @@ from langchain.agents.middleware import (
 )
 
 
-def create_analyst_middleware(model, backend) -> list:
+def create_main_agent_middleware(model, backend) -> list:
     """
-    Create a middleware list for the procurement-analyst sub-agent.
+    Create a middleware list for the main agent.
 
     Includes:
     - SummarizationToolMiddleware: Actively compresses context after phase completion
@@ -36,12 +36,11 @@ def create_analyst_middleware(model, backend) -> list:
     ]
 
 
-def create_order_middleware() -> list:
+def create_sub_agent_middleware() -> list:
     """
-    Create a middleware list for the procurement-order sub-agent.
+    Create a middleware list for the sub-agents.
 
-    Order operations are typically simple API calls and do not require
-    summarization tools. Only call limits are needed to prevent abnormal loops.
+    Only call limits are needed to prevent abnormal loops.
 
     Returns:
         List of middleware instances

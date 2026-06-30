@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from opensandbox.config import ConnectionConfigSync
+from pymongo import MongoClient
 
 # ---------- path config ----------
 # Get project folder dir
@@ -32,6 +33,12 @@ DOWNLOAD_DIR = project_dir / "download"
 LOCAL_SUBAGENT_CONFIG_DIR = project_dir / "agent/subagents"
 # Agent memory file on the local drive
 LOCAL_AGENTS_MD = project_dir / "agent/memory/AGENTS.md"
+
+# ---------- Filename constants ----------
+# 主 Agent 只读指引文件（上传到沙箱 /AGENTS.md）
+AGENTS_MD_FILENAME = "/AGENTS.md"
+# 用户偏好文件名（在 /memories/{user_id}/ 下）
+USER_PREFERENCES_FILENAME = "preferences.md"
 
 # ---------- LLM config ----------
 load_dotenv(ENV_PATH, override=True)
@@ -92,6 +99,16 @@ LOG_PREFIX = "travel_assistant"
 # ---------- persistence ----------
 # InMemoryStore for dev only. User Redis for prod
 STORE = InMemoryStore()
+
+# MongoDBSaver: Agent 对话状态的 MongoDB 持久化 checkpointer。
+# 支持 Human-in-the-Loop（interrupt 状态持久化）和跨重启对话恢复。
+_mongodb_client = MongoClient(MONGODB_URI)
+
+CHECKPOINTER = MongoDBSaver(
+    client=_mongodb_client,
+    db_name=MONGODB_DB_NAME,
+    checkpoint_collection_name=MONGODB_CHECKPOINT_COLLECTION,
+)
 
 # ---------- user skill persistence ----------
 PERSISTED_SKILLS_ROOT = "/persisted-skills"

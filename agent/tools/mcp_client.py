@@ -47,12 +47,12 @@ async def load_mcp_tools(
     if server_config is None:
         server_config = MCP_SERVER_CONFIG
 
-    print("[INFO] 正在连接 MCP Server...")
+    logger.info("Connecting to MCP Server...")
     mcp_client = MultiServerMCPClient(server_config)
 
     # 从 ERP MCP Server 获取业务工具
     travel_assistant_tools = await mcp_client.get_tools(server_name="travel-assistant-api")
-    print(f"[INFO] 已从 ERP MCP Server 加载 {len(erp_tools)} 个工具")
+    logger.info(f"Loaded {len(travel_assistant_tools )} tools from MCP server")
     # 合并全部工具
     all_tools = list(travel_assistant_tools)
 

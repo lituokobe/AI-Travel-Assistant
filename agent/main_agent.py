@@ -2,13 +2,21 @@ import asyncio
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StoreBackend
+from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
 
 from agent.backends.sandbox_setup import setup_sandbox
-from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL
+from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL, \
+    MAIN_MODEL, AGENTS_MD_FILENAME
 from agent.logger import logger
-from agent.middleware_config import create_analyst_middleware, create_order_middleware
-from agent.subagents.loader import load_subagent_configs
+from agent.memory.prompts import system_prompt
+from agent.middleware_config import create_sub_agent_middleware, create_main_agent_middleware
+from agent.middlewares.context_injection import ContextInjectionMiddleware
+from agent.middlewares.memory_update import MemoryUpdateMiddleware
+from agent.middlewares.skills_sync import SkillsSyncMiddleware
+from agent.middlewares.tools_summarization import build_summarization_middleware
+from agent.middlewares.user_skills_restore import UserSkillsRestoreMiddleware
+from agent.subagents.loader import load_subagent_configs, resolve_subagent_tools
 from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
 from agent.tools.hitl_tools import request_travel_info
@@ -154,8 +162,13 @@ async def create_main_agent(
     # ---- Phase 7: subagents' middleware ----
     logger.info("Phase 7/10: subagents' middleware...")
     extra_middleware = {
-        "procurement-analyst": create_analyst_middleware(SUMMARY_MODEL, backend),
-        "procurement-order": create_order_middleware(),
+        agent_name: create_sub_agent_middleware()
+        for agent_name in (
+            "car_subagent",
+            "flights_subagent",
+            "hotels_subagent",
+            "trip_subagent",
+        )
     }
 
     # ---- Phase 8: Interpret tool names ----
@@ -165,7 +178,7 @@ async def create_main_agent(
         available_tools,
         extra_middleware=extra_middleware,
     )
-    logger.info(f"  已解析 {len(subagents)} 个子 Agent")
+    logger.info(f"  {len(subagents)} sub agents are interpreted")
 
     # ---- Phase 9: main agent's middleware ----
     logger.info("Phase 9/10: main agent's middleware...")
