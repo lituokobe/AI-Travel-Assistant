@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent.backends.sandbox_setup import setup_sandbox
 from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL, \
-    MAIN_MODEL, AGENTS_MD_FILENAME
+    MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER
 from agent.logger import logger
 from agent.memory.prompts import system_prompt
 from agent.middleware_config import create_sub_agent_middleware, create_main_agent_middleware
@@ -16,6 +16,7 @@ from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skills_sync import SkillsSyncMiddleware
 from agent.middlewares.tools_summarization import build_summarization_middleware
 from agent.middlewares.user_skills_restore import UserSkillsRestoreMiddleware
+from agent.schema import TravelContext
 from agent.subagents.loader import load_subagent_configs, resolve_subagent_tools
 from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
@@ -203,9 +204,9 @@ async def create_main_agent(
         subagents=subagents,
         middleware=main_middleware,
         backend=backend,
-        store=STORE,  # 数据保持到哪里？
-        checkpointer=CHECKPOINTER,  # 上下文管理和持久化（mongoDB里面）
-        context_schema=ProcurementContext,  # 接受运行时数据的格式
+        store=STORE,
+        checkpointer=CHECKPOINTER,
+        context_schema=TravelContext,
     )
 
     logger.info("=== AI Travel Assistant is successfully created ===")

@@ -11,8 +11,6 @@ providing the following capabilities:
    after receiving reports from sub-agents).
 """
 
-from typing import Union
-
 from langchain_core.language_models import BaseChatModel
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from deepagents.middleware.summarization import SummarizationToolMiddleware

@@ -1,13 +1,18 @@
 from datetime import timedelta
 
 import httpx
-from langgraph.store.memory  import InMemoryStore
+import pymongo
+
 from langchain_openai import ChatOpenAI
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from langgraph.checkpoint.redis import RedisSaver
+from langgraph.store.mongodb import MongoDBStore
+
 from opensandbox.config import ConnectionConfigSync
 from pymongo import MongoClient
+from pymongo.synchronous.collection import Collection
 
 # ---------- path config ----------
 # Get project folder dir
@@ -97,18 +102,22 @@ LOG_KEEPING_HOURS = 24
 LOG_PREFIX = "travel_assistant"
 
 # ---------- persistence ----------
-# InMemoryStore for dev only. User Redis for prod
-STORE = InMemoryStore()
+MONGODB_URI = "mongodb://localhost:27017"
+MONGODB_DB_NAME = "mongodb_db_travel_assistant"
+MONGODB_COLLECTION = "mongodb_collection_travel_assistant"
+REDIS_URI = "redis://localhost:6379"
 
-# MongoDBSaver: Agent 对话状态的 MongoDB 持久化 checkpointer。
-# 支持 Human-in-the-Loop（interrupt 状态持久化）和跨重启对话恢复。
-_mongodb_client = MongoClient(MONGODB_URI)
+# MongoDB for Store (long term memory).
+mongo_client = pymongo.MongoClient(MONGODB_URI)
+db = mongo_client[MONGODB_DB_NAME]
+collection = db[MONGODB_COLLECTION] # only pointers are created
 
-CHECKPOINTER = MongoDBSaver(
-    client=_mongodb_client,
-    db_name=MONGODB_DB_NAME,
-    checkpoint_collection_name=MONGODB_CHECKPOINT_COLLECTION,
-)
+STORE = MongoDBStore(collection=collection)
+
+# Redis for checkpoint (short term memory).
+CHECKPOINTER = RedisSaver()
+CHECKPOINTER.configure_client(redis_url=REDIS_URI)
+CHECKPOINTER.setup()
 
 # ---------- user skill persistence ----------
 PERSISTED_SKILLS_ROOT = "/persisted-skills"
