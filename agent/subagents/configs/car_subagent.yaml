@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: car-rental (Car Rental Specialist)
+# Sub-Agent Configuration: car_subagent (Car Rental Specialist)
 # ============================================================
 # Defines the full configuration for the car rental sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: car-rental
+name: car_subagent
 
 description: >
   Car rental management specialist. Handles searching available car rentals,

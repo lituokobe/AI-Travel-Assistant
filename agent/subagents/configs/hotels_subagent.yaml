@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: hotels (Hotel Booking Specialist)
+# Sub-Agent Configuration: hotels_subagent (Hotel Booking Specialist)
 # ============================================================
 # Defines the full configuration for the hotels sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: hotels
+name: hotels_subagent
 
 description: >
   Hotel booking management specialist. Handles searching available hotels,

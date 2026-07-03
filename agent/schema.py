@@ -6,7 +6,7 @@ Contains type definitions for runtime context, user preferences, and related mod
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from pydantic import Field, BaseModel
 
 
@@ -27,27 +27,33 @@ class TravelContext:
     username: str  # Required. User's display name or login name.
 
 
-@dataclass
-class UserPreferences:
+class UserPreferences(BaseModel):
     """
-    User preference data structure stored in long-term memory.
-
-    Corresponds to the contents of /memories/{user_id}/preferences.md.
+    Long-term user profile.
+    Stored in long-term memory and continuously updated as the agent learns
+    about the user's travel habits and preferences.
     """
+    # Identity
+    base_city: str | None = None
+    passport_nationality: str | None = None
 
-    preferred_output: str|None = None  # 'table' or 'chart'
-    preferred_chart_type: str|None = None  # 'bar', 'line', 'pie', etc.
-    preferred_currency: str|None = None  # 'CNY', 'USD', etc.
-    preferred_language: str|None = None  # 'zh', 'en', etc.
-    recent_suppliers: list[str] = None  # List of recently used suppliers.
-    recent_queries: list[str] = None  # Summary list of recent analysis requests.
+    # Localization
+    preferred_language: str | None = None
+    preferred_currency: str | None = None
 
-    def __post_init__(self):
-        if self.recent_suppliers is None:
-            self.recent_suppliers = []
-        if self.recent_queries is None:
-            self.recent_queries = []
+    # Memberships
+    airline_memberships: list[str] = Field(default_factory=list)
+    hotel_memberships: list[str] = Field(default_factory=list)
 
+    # Travel preferences
+    preferred_travel_types: list[str] = Field(default_factory=list) # 'family', 'business', 'leisure', 'culture', etc
+    price_sensitivity: Literal["low", "medium", "high"] | None = None
+    special_preferences: list[str] = Field(default_factory=list) # 'vegan', 'no car rental', 'avoid red-eye flights' etc.
+
+    # Communication
+    communication_style: Literal["regular","formal","casual","cordial"]| None = None
+    recent_destinations: list[str] = Field(default_factory=list)
+    recent_queries: list[str] = Field(default_factory=list)
 
 # ============================================================
 # Chat-related models

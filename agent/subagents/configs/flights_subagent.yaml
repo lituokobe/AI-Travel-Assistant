@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: flights (Flight Booking Specialist)
+# Sub-Agent Configuration: flights_subagent (Flight Booking Specialist)
 # ============================================================
 # Defines the full configuration for the flights sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: flights
+name: flights_subagent
 
 description: >
   Flight booking management specialist. Handles retrieving a passenger's existing

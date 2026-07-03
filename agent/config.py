@@ -11,8 +11,6 @@ from langgraph.checkpoint.redis import RedisSaver
 from langgraph.store.mongodb import MongoDBStore
 
 from opensandbox.config import ConnectionConfigSync
-from pymongo import MongoClient
-from pymongo.synchronous.collection import Collection
 
 # ---------- path config ----------
 # Get project folder dir
@@ -22,27 +20,27 @@ project_dir = current_file.parent.parent
 # Define the paths
 ENV_PATH = project_dir / ".env"
 LOG_PATH = project_dir / "logs"
-# 沙箱内技能根路径
+# Sandbox skills root path
 SANDBOX_SKILLS_ROOT = "/skills"
-# 沙箱内记忆根路径（用户私有记忆存放处）
+# Sandbox memories root path (where user private memories are stored)
 SANDBOX_MEMORIES_ROOT = "/memories"
-# 沙箱内分析中间文件存放目录
+# Sandbox directory for intermediate analysis files
 SANDBOX_ANALYSIS_ROOT = "/analysis"
-# 沙箱内数据文件存放目录
+# Sandbox directory for data files
 SANDBOX_DATA_ROOT = "/data"
-# 本地技能资源目录（项目内的路径，相对于项目根）
+# Local skills resource directory (path within the project, relative to the project root)
 LOCAL_SKILLS_DIR = project_dir / "skills"
-# 本地下载目录（从沙箱下载文件的目标路径）
+# Local download directory (destination path for files downloaded from the sandbox)
 DOWNLOAD_DIR = project_dir / "download"
-# 本地子 Agent 配置目录
+# Local sub-agent configuration directory
 LOCAL_SUBAGENT_CONFIG_DIR = project_dir / "agent/subagents"
 # Agent memory file on the local drive
 LOCAL_AGENTS_MD = project_dir / "agent/memory/AGENTS.md"
 
 # ---------- Filename constants ----------
-# 主 Agent 只读指引文件（上传到沙箱 /AGENTS.md）
+# Main agent read-only guide file (uploaded to sandbox /AGENTS.md)
 AGENTS_MD_FILENAME = "/AGENTS.md"
-# 用户偏好文件名（在 /memories/{user_id}/ 下）
+# User preferences filename (under /memories/{user_id}/)
 USER_PREFERENCES_FILENAME = "preferences.md"
 
 # ---------- LLM config ----------

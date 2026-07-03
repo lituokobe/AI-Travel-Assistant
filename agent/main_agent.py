@@ -50,7 +50,7 @@ async def create_main_agent(
         sandbox_id: optional, reuse existing sandbox id. create new one when None
 
     Returns:
-        Compiled LangGraph StateGraph，callable with .ainvoke() / .astream()。
+        Compiled LangGraph StateGraph, callable with .ainvoke() / .astream().
     """
     logger.info("=== Start to build AI travel assistant ===")
 
@@ -122,7 +122,7 @@ async def create_main_agent(
     # ---- Phase 4: Load MCP tools ----
     logger.info("Phase 4/11: Load MCP tools...")
     try:
-        all_tools, flights_tools, car_tools, hotels_tools, trip_tools = (
+        all_tools, flights_tools, car_tools, hotels_tools, activity_tools = (
             await load_mcp_tools()
         )
     except Exception as e:
@@ -144,7 +144,7 @@ async def create_main_agent(
         list(flights_tools)
         + list(car_tools)
         + list(hotels_tools)
-        + list(trip_tools)
+        + list(activity_tools)
         + [web_search]
         + [request_travel_info]
         + [assign_skill]
@@ -168,7 +168,7 @@ async def create_main_agent(
             "car_subagent",
             "flights_subagent",
             "hotels_subagent",
-            "trip_subagent",
+            "activity_subagent",
         )
     }
 
@@ -218,23 +218,24 @@ async def create_main_agent(
 
 
 # ============================================================
-# Agent 懒加载代理（兼容同步/异步两种初始化场景）
+# Lazy-loading agent proxy (supports both sync and async initialization)
 # ============================================================
 
 async def _create_agent():
-    """创建 Agent 实例（供 _AgentProxy 调用）"""
+    """Create an agent instance (called by _AgentProxy)."""
     return await create_main_agent()
 
 
 class _AgentProxy:
     """
-    懒加载 Agent 代理类
+    Lazy-loading agent proxy.
 
-    兼容以下两种使用场景：
-    1. 同步环境（如 agent_test.py 控制台）：在模块导入后、事件循环启动前初始化
-    2. 异步环境（如 FastAPI 后端）：通过 get_agent_async() 在事件循环中初始化
+    Supports the following usage scenarios:
+    1. Sync environment (e.g. agent_test.py console): initialize after module import, before the event loop starts
+    2. Async environment (e.g. FastAPI backend): initialize in the event loop via get_agent_async()
 
-    当直接访问 agent 对象的属性/方法时，代理会自动触发初始化并委托调用。
+    When attributes/methods on the agent object are accessed directly, the proxy
+    automatically triggers initialization and delegates the call.
     """
 
     def __init__(self):
@@ -242,15 +243,15 @@ class _AgentProxy:
 
     @property
     def _is_initialized(self):
-        """检查底层 agent 是否已初始化"""
+        """Check whether the underlying agent has been initialized."""
         return self._agent is not None
 
     def _ensure_initialized(self):
         """
-        确保 agent 已初始化（同步方式）
+        Ensure the agent is initialized (synchronous path).
 
-        如果没有运行中的事件循环，使用 asyncio.run() 创建 agent。
-        如果事件循环正在运行，抛出 RuntimeError 提示使用 get_agent_async()。
+        If no event loop is running, create the agent with asyncio.run().
+        If an event loop is already running, raise RuntimeError and suggest using get_agent_async().
         """
         if self._agent is not None:
             return self._agent
@@ -265,7 +266,7 @@ class _AgentProxy:
         except RuntimeError as e:
             if "Agent 尚未初始化" in str(e):
                 raise
-            # 没有事件循环，继续初始化
+            # No event loop running; continue with initialization
 
         self._agent = asyncio.run(_create_agent())
         return self._agent
@@ -279,19 +280,19 @@ class _AgentProxy:
         return repr(self._agent)
 
 
-# agent 实例，初始化为懒加载代理，由 get_agent() / get_agent_async() 函数触发初始化
+# agent instance, initialized as a lazy-loading proxy; initialization is triggered by get_agent() / get_agent_async()
 agent = _AgentProxy()
 
 
 def get_agent():
     """
-    获取 agent 实例，懒加载方式（同步）
+    Get the agent instance via lazy loading (synchronous).
 
-    如果 agent 尚未初始化，则同步创建它。
-    注意：不能在运行中的事件循环内调用此函数。
+    If the agent has not been initialized yet, create it synchronously.
+    Note: do not call this function while an event loop is already running.
 
     Returns:
-        CompiledStateGraph: Agent 实例
+        CompiledStateGraph: Agent instance
     """
     global agent
     if isinstance(agent, _AgentProxy):
@@ -303,13 +304,13 @@ def get_agent():
 
 async def get_agent_async():
     """
-    异步获取 agent 实例，懒加载方式
+    Get the agent instance via lazy loading (asynchronous).
 
-    适用于在事件循环中运行时调用（如 FastAPI 的 lifespan）。
-    如果 agent 已通过 get_agent() 同步初始化，则直接返回。
+    Suitable when running inside an event loop (e.g. FastAPI lifespan).
+    If the agent was already initialized synchronously via get_agent(), return it directly.
 
     Returns:
-        CompiledStateGraph: Agent 实例
+        CompiledStateGraph: Agent instance
     """
     global agent
     if isinstance(agent, _AgentProxy):

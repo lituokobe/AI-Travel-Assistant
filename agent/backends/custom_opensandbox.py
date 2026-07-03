@@ -1,5 +1,4 @@
-# src/backends/open_sandbox_backend.py
-"""OpenSandbox 沙箱后端实现，遵循 SandboxBackendProtocol 协议。"""
+"""OpenSandbox sandbox backend implementation, conforming to the SandboxBackendProtocol."""
 from __future__ import annotations
 from collections.abc import Callable
 from typing import cast
@@ -21,9 +20,9 @@ PollingStrategy = Callable[[float], float]
 
 
 class OpenSandboxBackend(BaseSandbox):
-    """基于 OpenSandbox 的沙箱后端。
+    """OpenSandbox-based sandbox backend.
 
-    继承 BaseSandbox 的文件操作方法，仅实现 execute、download_files 和 upload_files。
+    Inherits file operation methods from BaseSandbox; only implements execute, download_files, and upload_files.
     """
 
     def __init__(
@@ -33,20 +32,22 @@ class OpenSandboxBackend(BaseSandbox):
             timeout: int = 60 * 60,
             sync_polling_interval: SyncPollingInterval = 0.1,
     ) -> None:
-        """创建一个包装已有 OpenSandbox 沙盒的后端实例。
+        """Create a backend instance wrapping an existing OpenSandbox sandbox.
 
-        Args：
-            sandbox：要包装的现有 OpenSandbox 沙盒实例。
-            timeout：调用 `execute()` 且未显式指定 `timeout` 时使用的默认命令超时时间（秒）。
-            sync_polling_interval：在同步执行路径上，轮询 OpenSandbox 命令完成状态的间隔时间（秒）；
-                也可以是一个可调用对象，接收已执行的秒数并返回下一次轮询的延迟时间。
+        Args:
+            sandbox: The existing OpenSandbox sandbox instance to wrap.
+            timeout: Default command timeout in seconds when `execute()` is called
+                without an explicit `timeout`.
+            sync_polling_interval: Interval in seconds for polling OpenSandbox command
+                completion on the synchronous execution path; may also be a callable
+                that receives elapsed seconds and returns the next polling delay.
         """
         logger.info(f"正在初始化 OpenSandbox，沙盒 ID: {sandbox.id}")
         self._sandbox = sandbox
-        # sandbox.kill()  # 手动关闭沙箱
+        # sandbox.kill()  # Manually shut down the sandbox
         self._default_timeout = timeout
 
-        # 处理轮询策略
+        # Handle polling strategy
         if callable(sync_polling_interval):
             polling_strategy = cast("PollingStrategy", sync_polling_interval)
         else:
@@ -58,12 +59,12 @@ class OpenSandboxBackend(BaseSandbox):
 
     @property
     def id(self) -> str:
-        """返回 OpenSandbox 沙盒的 ID。"""
+        """Return the OpenSandbox sandbox ID."""
         sandbox_id = self._sandbox.id
         logger.debug(f"获取沙盒 ID: {sandbox_id}")
         return sandbox_id
 
-    # 沙箱中非交互式 shell 不会加载 /etc/profile，需要手动注入环境变量
+    # Non-interactive shells in the sandbox do not load /etc/profile; inject env vars manually
     SANDBOX_PATH = (
         "/opt/python/versions/cpython-3.11.14-linux-x86_64-gnu/bin:"
         "/opt/go/1.25.5/bin:"
@@ -78,15 +79,15 @@ class OpenSandboxBackend(BaseSandbox):
             *,
             timeout: int | None = None,
     ) -> ExecuteResponse:
-        """在沙盒内部执行一条 Shell 命令。
+        """Execute a shell command inside the sandbox.
 
-        Args：
-            command：要执行的 Shell 命令字符串。
-            timeout：等待命令完成的最大时间（秒）。
-                如果为 None，则使用后端默认的超时时间。
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for command completion.
+                If None, uses the backend default timeout.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        # 非交互式 shell 不会 source /etc/profile，需要注入 PATH 确保 pip/python 可用
+        # Non-interactive shell does not source /etc/profile; inject PATH so pip/python are available
         wrapped = f'export PATH="{self.SANDBOX_PATH}:$PATH" && {command}'
         logger.debug(f"准备执行命令：{command[:100]}...（超时时间={effective_timeout}秒）")
         return self._execute_command(wrapped, timeout=effective_timeout)
@@ -97,13 +98,13 @@ class OpenSandboxBackend(BaseSandbox):
             *,
             timeout: int,
     ) -> ExecuteResponse:
-        """使用 OpenSandbox 的 API 执行命令。"""
+        """Execute a command via the OpenSandbox API."""
         try:
             logger.debug(f"通过 OpenSandbox API 执行命令：{command}")
             result = self._sandbox.commands.run(command)
             logger.debug(f"命令执行完成，退出码：{result.exit_code}")
 
-            # 提取标准输出与标准错误
+            # Extract stdout and stderr
             stdout = ""
             stderr = ""
 
@@ -115,7 +116,7 @@ class OpenSandboxBackend(BaseSandbox):
                 stderr = "\n".join([log.text for log in result.logs.stderr])
                 logger.debug(f"命令标准错误长度：{len(stderr)} 字符")
 
-            # 合并输出
+            # Merge output
             output = stdout
             if stderr and stderr.strip():
                 output += f"\n<stderr>{stderr.strip()}</stderr>"
@@ -146,13 +147,13 @@ class OpenSandboxBackend(BaseSandbox):
             )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """从沙箱下载指定文件。
+        """Download specified files from the sandbox.
 
         Args:
-            paths: 沙箱中的绝对文件路径列表。
+            paths: List of absolute file paths in the sandbox.
 
         Returns:
-            与 paths 顺序对应的响应列表，包含文件内容或错误信息。
+            Responses in the same order as paths, containing file content or error info.
         """
         responses: list[FileDownloadResponse] = []
 
@@ -164,7 +165,7 @@ class OpenSandboxBackend(BaseSandbox):
                 continue
             try:
                 content = self._sandbox.files.read_file(path)
-                # 统一转为 bytes
+                # Normalize to bytes
                 content_bytes = content.encode("utf-8") if isinstance(content, str) else content
                 responses.append(
                     FileDownloadResponse(path=path, content=content_bytes, error=None)
@@ -177,13 +178,13 @@ class OpenSandboxBackend(BaseSandbox):
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """上传文件到沙箱。
+        """Upload files to the sandbox.
 
         Args:
-            files: 每个元素为 (绝对路径, 文件内容字节) 的元组列表。
+            files: List of (absolute path, file content bytes) tuples.
 
         Returns:
-            与 files 顺序对应的响应列表，包含操作错误信息（成功时为 None）。
+            Responses in the same order as files, with error info (None on success).
         """
         responses: list[FileUploadResponse] = []
         upload_entries: list[WriteEntry] = []
@@ -193,7 +194,7 @@ class OpenSandboxBackend(BaseSandbox):
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
                 continue
             try:
-                # 将 bytes 转换为字符串用于写入
+                # Convert bytes to string for writing
                 if isinstance(content, bytes):
                     try:
                         content_str = content.decode("utf-8")
@@ -210,7 +211,7 @@ class OpenSandboxBackend(BaseSandbox):
             try:
                 self._sandbox.files.write_files(upload_entries)
             except Exception as e:
-                # 若写操作失败，将所有成功准备但未真正上传的条目标记为错误
+                # If the write fails, mark all successfully prepared but not yet uploaded entries as errors
                 for resp in responses:
                     if resp.error is None:
                         resp.error = f"upload_failed: {e}"

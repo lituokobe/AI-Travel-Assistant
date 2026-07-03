@@ -52,13 +52,6 @@ def setup_sandbox(config, sandbox_id=None, image=None) -> OpenSandboxBackend:
             resource={"cpu": "2", "memory": "4Gi"},
             timeout=timedelta(minutes=30),
             connection_config=config,
-            # network_policy=NetworkPolicy(  # 沙箱网络路由限制策略
-            #     defaultAction="deny",
-            #     egress=[
-            #         NetworkRule(action="allow", target="pypi.org"),
-            #         NetworkRule(action="allow", target="*.github.com"),
-            #     ]
-            # )
         )
 
     backend = OpenSandboxBackend(sandbox=sandbox)
@@ -113,8 +106,8 @@ def _seed_files(backend: OpenSandboxBackend) -> None:
         to_upload.append((sandbox_path, local_content))
 
     if to_upload:
-        print(f"[INFO] 正在上传 {len(to_upload)} 个基础文件...")
+        logger.info(f"正在上传 {len(to_upload)} 个基础文件...")
         backend.upload_files(to_upload)
-        print("[INFO] 基础文件上传完成。")
+        logger.info("基础文件上传完成。")
     else:
-        print("[INFO] 所有基础文件已就绪，无需上传。")
+        logger.info("所有基础文件已就绪，无需上传。")
