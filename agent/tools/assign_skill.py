@@ -51,7 +51,7 @@ def create_assign_skill_tool(sandbox_backend, store, skills_namespace):
                 - "car-agent" — Assigns to the car booking sub-Agent.
                 - "flights-agent" — Assigns to the flight management sub-Agent.
                 - "hotels-agent" — Assigns to the hotel booking sub-Agent.
-                - "trip-agent" — Assigns to the trip sub-Agent.
+                - "activity-agent" — Assigns to the activity sub-Agent.
 
         Returns:
             Assignment confirmation or error message.

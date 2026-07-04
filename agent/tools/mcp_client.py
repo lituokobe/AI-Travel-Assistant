@@ -7,11 +7,10 @@ MCP 工具客户端。
 使用方式:
     from agent.tools.mcp_client import load_mcp_tools
 
-    all_tools, analyst_tools, order_tools, chart_tools = await load_mcp_tools()
+    all_tools, flights_tools, car_tools, hotels_tools, activity_tools = await load_mcp_tools()
 """
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
-
 from agent.logger import logger
 
 MCP_SERVER_CONFIG = {
@@ -25,7 +24,7 @@ MCP_SERVER_CONFIG = {
 FLIGHTS_TOOL_PREFIXES = ("flights_", )
 CAR_TOOL_PREFIXES = ("car_",)
 HOTELS_TOOL_PREFIXES = ("hotels_",)
-TRIP_TOOL_PREFIXES = ("trip_",)
+ACTIVITY_TOOL_PREFIXES = ("activity_",)
 
 
 async def load_mcp_tools(
@@ -38,11 +37,12 @@ async def load_mcp_tools(
         server_config: MCP Server 连接配置，默认使用 MCP_SERVER_CONFIG。
 
     Returns:
-        (all_tools, analyst_tools, order_tools, chart_tools) 四元组
-        - all_tools: 全部 MCP 工具列表（ERP + 图表）
-        - analyst_tools: 供应商查询 + 零部件查询 + 库存预警工具
-        - order_tools: 订单创建 + 订单更新 + 订单搜索工具
-        - chart_tools: 图表/地图/可视化生成工具（来自魔塔社区 MCP Server，27 种）
+        (all_tools, flights_tools, car_tools, hotels_tools, activity_tools) 四元组
+        - all_tools: 全部 MCP 工具列表
+        - flights_tools: 查询、预订、修改、取消航班
+        - car_tools: 查询、预订、修改、取消租车
+        - hotels_tools: 查询、预订、修改、取消酒店订单
+        - activity_tools: 查询、预订、修改、取消旅行活动
     """
     if server_config is None:
         server_config = MCP_SERVER_CONFIG
@@ -50,7 +50,7 @@ async def load_mcp_tools(
     logger.info("Connecting to MCP Server...")
     mcp_client = MultiServerMCPClient(server_config)
 
-    # 从 ERP MCP Server 获取业务工具
+    # 从 MCP Server 获取业务工具
     travel_assistant_tools = await mcp_client.get_tools(server_name="travel-assistant-api")
     logger.info(f"Loaded {len(travel_assistant_tools )} tools from MCP server")
     # 合并全部工具
@@ -72,9 +72,9 @@ async def load_mcp_tools(
         if t.name.startswith(HOTELS_TOOL_PREFIXES)
     ]
 
-    trip_tools = [
+    activity_tools = [
         t for t in travel_assistant_tools
-        if t.name.startswith(TRIP_TOOL_PREFIXES)
+        if t.name.startswith(ACTIVITY_TOOL_PREFIXES)
     ]
 
 
@@ -83,7 +83,7 @@ async def load_mcp_tools(
         f"Flights tools: {len(flights_tools)} , "
         f"Car tools: {len(car_tools)} , "
         f"Hotels tools: {len(hotels_tools)} , "
-        f"Trip tools: {len(trip_tools)} "
+        f"Activity tools: {len(activity_tools)} "
     )
 
-    return all_tools, flights_tools, car_tools, hotels_tools, trip_tools
+    return all_tools, flights_tools, car_tools, hotels_tools, activity_tools

@@ -125,5 +125,5 @@ SCOPE_MAP = {
     "car-agent": "car",
     "flights-agent": "flights",
     "hotels-agent": "hotels",
-    "trip-agent": "trip"
+    "activity-agent": "activity"
 }
