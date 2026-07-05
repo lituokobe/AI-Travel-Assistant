@@ -260,11 +260,11 @@ class _AgentProxy:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 raise RuntimeError(
-                    "Agent 尚未初始化且当前在事件循环中，"
-                    "请使用 await get_agent_async() 获取 agent"
+                    "Agent is not initialized and an event loop is already running. "
+                    "Use await get_agent_async() to get the agent."
                 )
         except RuntimeError as e:
-            if "Agent 尚未初始化" in str(e):
+            if "Agent is not initialized" in str(e):
                 raise
             # No event loop running; continue with initialization
 

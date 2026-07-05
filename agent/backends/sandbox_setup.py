@@ -57,7 +57,7 @@ def setup_sandbox(config, sandbox_id=None, image=None) -> OpenSandboxBackend:
     backend = OpenSandboxBackend(sandbox=sandbox)
     logger.info(f"Sandbox is ready,ID: {sandbox.id}")
 
-    # seed base files（AGENTS.md、Skills）
+    # Seed base files (AGENTS.md, Skills)
     _seed_files(backend)
 
     return backend
@@ -67,12 +67,12 @@ def _seed_files(backend: OpenSandboxBackend) -> None:
     """
     Upload local files to sandbox
 
-    AGENTS.md is migrated to StoreBackend（globally shared, no need sandbox）
+    AGENTS.md is migrated to StoreBackend (globally shared, no sandbox needed)
     Only upload files that are not in sandbox, avoiding replacing updated content
     """
     file_mapping: list[tuple[Path, str]] = []
 
-    # 遍历 skills 目录，添加所有技能文件
+    # Walk the skills directory and add all skill files
     skills_base = Path(LOCAL_SKILLS_DIR)
     if skills_base.exists():
         for skill_dir in skills_base.iterdir():
@@ -84,13 +84,13 @@ def _seed_files(backend: OpenSandboxBackend) -> None:
                     sandbox_path = f"{SANDBOX_SKILLS_ROOT}/{rel}"
                     file_mapping.append((local_file, sandbox_path))
 
-    # 收集需要上传的文件
+    # Collect files that need to be uploaded
     to_upload: list[tuple[str, bytes]] = []
     for local_path, sandbox_path in file_mapping:
         if not local_path.exists():
             continue
         local_content = local_path.read_bytes()
-        # 用 test -f 检测文件是否存在（无 ERROR 日志），避免 download_files 对 404 打 ERROR
+        # Use test -f to check file existence (no ERROR logs), avoiding download_files 404 ERROR logs
         check = backend.execute(f"test -f {sandbox_path}")
         if check.exit_code == 0:
             try:
@@ -106,8 +106,8 @@ def _seed_files(backend: OpenSandboxBackend) -> None:
         to_upload.append((sandbox_path, local_content))
 
     if to_upload:
-        logger.info(f"正在上传 {len(to_upload)} 个基础文件...")
+        logger.info(f"Uploading {len(to_upload)} base files...")
         backend.upload_files(to_upload)
-        logger.info("基础文件上传完成。")
+        logger.info("Base file upload complete.")
     else:
-        logger.info("所有基础文件已就绪，无需上传。")
+        logger.info("All base files are ready; no upload needed.")

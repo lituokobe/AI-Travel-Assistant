@@ -104,10 +104,10 @@ def register_car_tools(mcp: FastMCP):
 
         if cursor.rowcount > 0:
             conn.close()
-            return f"汽车租赁 {rental_id} 成功更新。"
+            return f"Car rental {rental_id} updated successfully."
         else:
             conn.close()
-            return f"未找到ID为 {rental_id} 的汽车租赁服务。"
+            return f"No car rental found with ID {rental_id}."
 
 
     @mcp.tool(name=f"{GROUP_NAME}_cancel")

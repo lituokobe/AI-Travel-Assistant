@@ -1,12 +1,13 @@
 """
-自动记忆更新中间件。
+Automatic memory update middleware.
 
-在每轮 Agent 回复完成后（aafter_agent 钩子），自动提取对话中涉及的
-供应商名称和查询摘要，更新 StoreBackend 中的用户偏好文件。
+After each Agent reply (aafter_agent hook), automatically extracts
+destination names and query summaries from the conversation and updates
+the user preferences file in StoreBackend.
 
-Agent 无需手动维护 recent_destinations / recent_queries —— 系统自动处理。
+The Agent does not need to manually maintain recent_destinations / recent_queries — the system handles it.
 
-使用方式:
+Usage:
     from agent.middlewares.memory_update import MemoryUpdateMiddleware
     middleware = MemoryUpdateMiddleware(model=SUMMARY_MODEL)
 """
@@ -21,7 +22,7 @@ from langchain_core.messages import BaseMessage
 
 from agent.logger import logger
 
-# 触发自动更新的旅游管理业务关键词
+# Travel-related keywords that trigger automatic memory updates
 _TRIGGER_KEYWORDS = [
     "hotel", "car booking", "flight", "tour", "travel",
     "订票", "门票", "景点", "sight-seeing", "trip", "exhibition",
@@ -29,7 +30,7 @@ _TRIGGER_KEYWORDS = [
     "经济舱", "出差", "订车", "快捷酒店", "五星级酒店",
 ]
 
-# 跳过更新的无意义消息模式
+# Meaningless message patterns to skip for updates
 _SKIP_PATTERNS = [
     "你好", "在吗", "嗨", "hello", "hi", "hey",
     "你能做什么", "你有哪些功能", "你是谁",
@@ -38,12 +39,12 @@ _SKIP_PATTERNS = [
 
 
 def _is_meaningful_travel_comm(messages: list[BaseMessage]) -> str|None:
-    """检查最后一条用户消息是否为有意义的旅行相关的交互。
+    """Check whether the last user message is a meaningful travel-related interaction.
 
     Returns:
-        用户消息文本（有意义时），或 None（应跳过）。
+        User message text when meaningful, or None when the update should be skipped.
     """
-    # 从后往前找最后一条用户消息
+    # Find the last user message, scanning from the end
     last_user_msg = None
     for msg in reversed(messages):
         msg_type = getattr(msg, "type", None)
@@ -65,18 +66,18 @@ def _is_meaningful_travel_comm(messages: list[BaseMessage]) -> str|None:
     if not content:
         return None
 
-    # 跳过无意义消息
+    # Skip meaningless messages
     content_lower = content.lower().replace(" ", "")
     for pattern in _SKIP_PATTERNS:
         if pattern.lower().replace(" ", "") in content_lower:
             return None
 
-    # 检查是否包含旅行安排关键词
+    # Check for travel arrangement keywords
     has_travel_keyword = any(
         kw.lower() in content_lower for kw in _TRIGGER_KEYWORDS
     )
     if not has_travel_keyword:
-        # 兜底：检查是否委派了子 Agent（messages 中有 task 工具调用）
+        # Fallback: check whether a sub-agent was delegated (task tool call in messages)
         has_subagent_call = False
         for msg in messages:
             if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -93,7 +94,7 @@ def _is_meaningful_travel_comm(messages: list[BaseMessage]) -> str|None:
 
 
 def _extract_ai_summary(messages: list[BaseMessage]) -> str:
-    """提取最后一条 AI 消息的前 300 字符作为摘要。"""
+    """Extract the first 300 characters of the last AI message as a summary."""
     for msg in reversed(messages):
         if getattr(msg, "type", None) == "ai":
             content = msg.content
@@ -109,10 +110,10 @@ def _extract_ai_summary(messages: list[BaseMessage]) -> str:
 async def _extract_entities(
     model: BaseChatModel, user_message: str, ai_summary: str
 ) -> dict[str, Any]:
-    """使用 LLM 从对话中提取目的地和查询摘要。
+    """Use an LLM to extract destinations and a query summary from the conversation.
 
     Returns:
-        {"destinations": [...], "query": "..."} 或 {"destinations": [], "query": ""}
+        {"destinations": [...], "query": "..."} or {"destinations": [], "query": ""}
     """
     prompt = f"""Extract travel-related entities from this conversation.
 
@@ -130,7 +131,7 @@ Return ONLY a JSON object, no other text:
     try:
         response = await model.ainvoke(prompt)
 
-        # 从回复中提取 JSON
+        # Extract JSON from the reply
         text = response.content
         if isinstance(text, list):
             text = " ".join(
@@ -139,7 +140,7 @@ Return ONLY a JSON object, no other text:
             )
         text = str(text).strip()
 
-        # 提取 JSON 块
+        # Extract JSON block
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -149,13 +150,13 @@ Return ONLY a JSON object, no other text:
                 "query": result.get("query", ""),
             }
     except Exception as e:
-        logger.warning(f"MemoryUpdateMiddleware: LLM 提取失败，跳过本次更新 \n {e}", exc_info=True)
+        logger.warning(f"MemoryUpdateMiddleware: LLM extraction failed, skipping this update \n {e}", exc_info=True)
 
     return {"destinations": [], "query": ""}
 
 
 def _create_file_value(content_str: str) -> dict:
-    """创建 StoreBackend 兼容的文件值（与 deepagents.backends.utils.create_file_data 一致）。"""
+    """Create a StoreBackend-compatible file value (consistent with deepagents.backends.utils.create_file_data)."""
     lines = content_str.split("\n")
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -166,28 +167,28 @@ def _create_file_value(content_str: str) -> dict:
 
 
 class MemoryUpdateMiddleware(AgentMiddleware):
-    """在 Agent 回复后自动更新用户记忆文件中的 recent_destinations / recent_queries。
+    """Automatically update recent_destinations / recent_queries in the user memory file after Agent replies.
 
-    不依赖 Agent 自觉——中间件自动提取、合并、写回。
+    Does not rely on the Agent to remember — the middleware extracts, merges, and writes back automatically.
     """
 
     def __init__(self, model: BaseChatModel) -> None:
         super().__init__()
         self.model = model
 
-    # ---- 同步钩子（不执行操作）----
+    # ---- Sync hook (no-op) ----
     def after_agent(
         self, state: dict[str, Any], runtime: Any
     ) -> dict[str, Any]|None:
         return None
 
-    # ---- 异步钩子（核心逻辑）----
+    # ---- Async hook (core logic) ----
     async def aafter_agent(
         self, state: dict[str, Any], runtime: Any
     ) -> dict[str, Any]|None:
-        """Agent 回复完成后触发：提取实体并更新记忆。"""
+        """Triggered after Agent reply completes: extract entities and update memory."""
         try:
-            # 1. 获取 user_id
+            # 1. Get user_id
             ctx = getattr(runtime, "context", None)
             if ctx is None:
                 return None
@@ -195,20 +196,20 @@ class MemoryUpdateMiddleware(AgentMiddleware):
             if not user_id:
                 return None
 
-            # 2. 获取消息列表
+            # 2. Get message list
             messages: list[BaseMessage] = state.get("messages", [])
             if not messages:
                 return None
 
-            # 3. 判断是否需要更新
+            # 3. Decide whether an update is needed
             user_message = _is_meaningful_travel_comm(messages)
             if user_message is None:
                 return None
 
-            # 4. 提取 AI 摘要
+            # 4. Extract AI summary
             ai_summary = _extract_ai_summary(messages)
 
-            # 5. LLM 提取实体，或得最近目的地信息
+            # 5. LLM entity extraction for recent destinations
             extracted = await _extract_entities(self.model, user_message, ai_summary)
             destinations = extracted.get("destinations", [])
             query = extracted.get("query", "")
@@ -221,10 +222,10 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                 f"destinations={destinations}, query={query[:50]}"
             )
 
-            # 6. 从 store 读取当前偏好文件
+            # 6. Read current preferences file from store
             store = getattr(runtime, "store", None)
             if store is None:
-                logger.warning("MemoryUpdateMiddleware: runtime.store 不可用")
+                logger.warning("MemoryUpdateMiddleware: runtime.store is unavailable")
                 return None
 
             namespace = (user_id,)
@@ -236,7 +237,7 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                 item = None
                 logger.warning(f"Cannot get name space from Store: {e}")
 
-            # 7. 解析现有内容或创建默认
+            # 7. Parse existing content or create defaults
             current_lines: list[str] = []
             if item is not None and hasattr(item, "value"):
                 value = item.value
@@ -253,17 +254,17 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                 current_lines, destinations, query
             )
 
-            # 8. 写回 store
+            # 8. Write back to store
             file_value = _create_file_value(updated_content)
             await store.aput(namespace, key, file_value)
 
             logger.info(
-                f"MemoryUpdateMiddleware: 已更新 {user_id} 的记忆 "
+                f"MemoryUpdateMiddleware: updated memory for {user_id} "
                 f"(destinations={len(destinations)}, query={'yes' if query else 'no'})"
             )
 
         except Exception as e:
-            logger.warning(f"MemoryUpdateMiddleware: 更新失败 \n {e}", exc_info=True)
+            logger.warning(f"MemoryUpdateMiddleware: update failed \n {e}", exc_info=True)
 
         return None
 
@@ -271,20 +272,20 @@ class MemoryUpdateMiddleware(AgentMiddleware):
 def _merge_preferences(
     current_lines: list[str], new_destinations: list[str], new_query: str
 ) -> str:
-    """将新的 destinations/query 合并到现有偏好内容中。
+    """Merge new destinations/query into existing preference content.
 
-    策略：先移除旧 recent_destinations / recent_queries 区块，再在末尾追加合并后的版本。
+    Strategy: remove old recent_destinations / recent_queries blocks, then append merged versions at the end.
     """
-    # 1. 解析旧的 destinations 和 queries
+    # 1. Parse existing destinations and queries
     existing_destinations: list[str] = []
     existing_queries: list[str] = []
 
     def _parse_list_items(lines: list[str], start_idx: int) -> tuple:
-        """从 start_idx 行（recent_xxx: 标题行）解析列表项。"""
+        """Parse list items from start_idx line (recent_xxx: header line)."""
         items: list[str] = []
         title_line = lines[start_idx].strip()
 
-        # 检查 inline 格式: recent_destinations: [a, b]
+        # Check inline format: recent_destinations: [a, b]
         colon_pos = title_line.find(":")
         if colon_pos != -1:
             inline = title_line[colon_pos + 1:].strip()
@@ -293,7 +294,7 @@ def _merge_preferences(
                 if inner:
                     return [s.strip().strip("'").strip('"') for s in inner.split(",") if s.strip()], 1
 
-        # 多行格式: 从下一行开始收集 - xxx 项
+        # Multi-line format: collect - xxx items from the next line onward
         count = 1
         for j in range(start_idx + 1, len(lines)):
             stripped = lines[j].strip()
@@ -301,12 +302,12 @@ def _merge_preferences(
                 items.append(stripped[2:].strip().strip("'").strip('"'))
                 count += 1
             elif stripped and not lines[j].startswith(" "):
-                break  # 遇到下一个顶级字段
+                break  # Hit the next top-level field
             else:
-                count += 1  # 空行或注释，仍属于当前区块
+                count += 1  # Blank line or comment still belongs to current block
         return items, count
 
-    # 2. 找出旧区块的位置和值
+    # 2. Find positions and values of old blocks
     destinations_start = -1
     destinations_len = 0
     queries_start = -1
@@ -321,9 +322,9 @@ def _merge_preferences(
             queries_start = i
             existing_queries, queries_len = _parse_list_items(current_lines, i)
 
-    # 3. 从原内容中移除旧区块（从后往前移，避免索引偏移）
+    # 3. Remove old blocks from original content (delete from end to avoid index shift)
     clean_lines = list(current_lines)
-    # 按起始位置降序排列，从后往前删除
+    # Sort by start position descending; delete from back to front
     removals = []
     if destinations_start >= 0:
         removals.append((destinations_start, destinations_len))
@@ -334,7 +335,7 @@ def _merge_preferences(
     for start, length in removals:
         del clean_lines[start:start + length]
 
-    # 4. 合并新值和旧值
+    # 4. Merge new and old values
     merged_destinations = list(new_destinations)
     for s in existing_destinations:
         if s not in merged_destinations:
@@ -347,10 +348,10 @@ def _merge_preferences(
             merged_queries.append(q)
     merged_queries = merged_queries[:5]
 
-    # 5. 追加合并后的区块
+    # 5. Append merged blocks
     result_lines = list(clean_lines)
 
-    # 确保末尾有空行分隔
+    # Ensure a blank line separator at the end
     if result_lines and result_lines[-1].strip():
         result_lines.append("")
 

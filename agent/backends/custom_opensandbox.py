@@ -42,7 +42,7 @@ class OpenSandboxBackend(BaseSandbox):
                 completion on the synchronous execution path; may also be a callable
                 that receives elapsed seconds and returns the next polling delay.
         """
-        logger.info(f"正在初始化 OpenSandbox，沙盒 ID: {sandbox.id}")
+        logger.info(f"Initializing OpenSandbox, sandbox ID: {sandbox.id}")
         self._sandbox = sandbox
         # sandbox.kill()  # Manually shut down the sandbox
         self._default_timeout = timeout
@@ -55,13 +55,13 @@ class OpenSandboxBackend(BaseSandbox):
                 return sync_polling_interval
 
         self._sync_polling_interval = polling_strategy
-        logger.debug(f"OpenSandbox 初始化完成，默认超时时间={timeout}秒")
+        logger.debug(f"OpenSandbox initialization complete, default timeout={timeout}s")
 
     @property
     def id(self) -> str:
         """Return the OpenSandbox sandbox ID."""
         sandbox_id = self._sandbox.id
-        logger.debug(f"获取沙盒 ID: {sandbox_id}")
+        logger.debug(f"Retrieved sandbox ID: {sandbox_id}")
         return sandbox_id
 
     # Non-interactive shells in the sandbox do not load /etc/profile; inject env vars manually
@@ -89,7 +89,7 @@ class OpenSandboxBackend(BaseSandbox):
         effective_timeout = timeout if timeout is not None else self._default_timeout
         # Non-interactive shell does not source /etc/profile; inject PATH so pip/python are available
         wrapped = f'export PATH="{self.SANDBOX_PATH}:$PATH" && {command}'
-        logger.debug(f"准备执行命令：{command[:100]}...（超时时间={effective_timeout}秒）")
+        logger.debug(f"Preparing to execute command: {command[:100]}... (timeout={effective_timeout}s)")
         return self._execute_command(wrapped, timeout=effective_timeout)
 
     def _execute_command(
@@ -100,9 +100,9 @@ class OpenSandboxBackend(BaseSandbox):
     ) -> ExecuteResponse:
         """Execute a command via the OpenSandbox API."""
         try:
-            logger.debug(f"通过 OpenSandbox API 执行命令：{command}")
+            logger.debug(f"Executing command via OpenSandbox API: {command}")
             result = self._sandbox.commands.run(command)
-            logger.debug(f"命令执行完成，退出码：{result.exit_code}")
+            logger.debug(f"Command execution complete, exit code: {result.exit_code}")
 
             # Extract stdout and stderr
             stdout = ""
@@ -110,18 +110,18 @@ class OpenSandboxBackend(BaseSandbox):
 
             if result.logs.stdout:
                 stdout = "\n".join([log.text for log in result.logs.stdout])
-                logger.debug(f"命令标准输出长度：{len(stdout)} 字符")
+                logger.debug(f"Command stdout length: {len(stdout)} characters")
 
             if result.logs.stderr:
                 stderr = "\n".join([log.text for log in result.logs.stderr])
-                logger.debug(f"命令标准错误长度：{len(stderr)} 字符")
+                logger.debug(f"Command stderr length: {len(stderr)} characters")
 
             # Merge output
             output = stdout
             if stderr and stderr.strip():
                 output += f"\n<stderr>{stderr.strip()}</stderr>"
 
-            logger.info(f"命令执行成功，退出码：{result.exit_code or 0}")
+            logger.info(f"Command executed successfully, exit code: {result.exit_code or 0}")
             return ExecuteResponse(
                 output=output,
                 exit_code=result.exit_code or 0,
@@ -130,18 +130,18 @@ class OpenSandboxBackend(BaseSandbox):
 
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"执行命令时发生错误：{error_msg}", exc_info=True)
+            logger.error(f"Error while executing command: {error_msg}", exc_info=True)
 
             if "timeout" in error_msg.lower():
-                logger.warning(f"命令在 {timeout} 秒后超时")
+                logger.warning(f"Command timed out after {timeout} seconds")
                 return ExecuteResponse(
-                    output=f"命令在 {timeout} 秒后超时",
+                    output=f"Command timed out after {timeout} seconds",
                     exit_code=124,
                     truncated=False,
                 )
 
             return ExecuteResponse(
-                output=f"执行命令时出错：{error_msg}",
+                output=f"Error executing command: {error_msg}",
                 exit_code=1,
                 truncated=False,
             )

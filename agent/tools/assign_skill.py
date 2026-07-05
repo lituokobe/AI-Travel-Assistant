@@ -27,19 +27,6 @@ def create_assign_skill_tool(sandbox_backend, store, skills_namespace):
     @tool
     async def assign_skill(skill_name: str, agent_name: str) -> str:
         """
-        将已验证的技能分配给指定 Agent（主 Agent 或子 Agent），并持久化到长期存储。
-
-        前提条件：技能已下载/创建到 /skills/main/{skill_name}/ 并通过测试。
-
-        Args:
-            skill_name: 技能目录名（如 "web-scraper"）
-            agent_name: 目标 Agent：
-                - "main" — 分配给主 Agent 自身（技能已就位，直接持久化）
-                - "" — 分配给采购分析子 Agent
-                - "procurement-order" — 分配给采购订单子 Agent
-
-        Returns:
-            分配确认或错误信息。
         Assigns a verified skill to a specified Agent (main Agent or sub-Agent) and persists it to long-term storage.
 
         Prerequisites: The skill must have been downloaded/created to /skills/main/{skill_name}/ and passed testing.
