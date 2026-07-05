@@ -26,7 +26,7 @@ preferred_currency: SGD
 airline_memberships: []
 hotel_memberships: []
 preferred_travel_types: []
-price_sensitivity: "medium"
+price_sensitivity: medium
 special_preferences: []
 communication_style: regular
 ```
