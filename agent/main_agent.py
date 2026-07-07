@@ -10,7 +10,7 @@ from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NA
     MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER
 from agent.logger import logger
 from agent.memory.prompts import system_prompt
-from agent.middleware_config import create_sub_agent_middleware, create_main_agent_middleware
+from agent.middleware_config import create_sub_agent_middleware
 from agent.middlewares.context_injection import ContextInjectionMiddleware
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skills_sync import SkillsSyncMiddleware
