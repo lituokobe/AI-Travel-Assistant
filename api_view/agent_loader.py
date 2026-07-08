@@ -61,8 +61,10 @@ class AgentLifecycleManager:
             self._sandbox_id = sandbox_id
 
             try:
+                from api_view.db_bootstrap import sync_database_dates
                 from api_view.model_override import apply_model_overrides
 
+                sync_database_dates()
                 model_info = apply_model_overrides()
                 self._agent = await create_main_agent(sandbox_id=sandbox_id)
                 self._state = AgentState.READY

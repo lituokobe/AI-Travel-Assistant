@@ -1,6 +1,6 @@
 from sqlite3 import connect
 from fastmcp import FastMCP
-from mcp_server.tools import db
+from data.data_base import db
 
 GROUP_NAME = "activity"
 

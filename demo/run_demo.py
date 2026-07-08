@@ -3,7 +3,7 @@
 Unified demo launcher for AI Travel Assistant.
 
 Starts (in order):
-  1. Seeds SQLite demo database (if missing)
+  1. Synchronizes SQLite travel DB dates (data/data_base)
   2. MCP tool server  (port 8000)
   3. FastAPI agent API (port 8080)
   4. Gradio chat UI    (port 7860)
@@ -11,7 +11,7 @@ Starts (in order):
 Usage:
   python demo/run_demo.py
   python demo/run_demo.py --skip-ui        # API + MCP only
-  python demo/run_demo.py --seed-only      # just create the database
+  python demo/run_demo.py --sync-db-only  # only refresh DB dates
 """
 
 from __future__ import annotations
@@ -77,14 +77,15 @@ def _shutdown(signum=None, frame=None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="AI Travel Assistant Demo Launcher")
     parser.add_argument("--skip-ui", action="store_true", help="Skip Gradio UI")
-    parser.add_argument("--seed-only", action="store_true", help="Only seed the database")
-    parser.add_argument("--no-seed", action="store_true", help="Skip database seeding")
+    parser.add_argument("--sync-db-only", action="store_true", help="Only sync database dates")
+    parser.add_argument("--no-db-sync", action="store_true", help="Skip database date sync")
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # Load .env if present
+    sys.path.insert(0, str(PROJECT_DIR))
+
     env_file = PROJECT_DIR / ".env"
     if not env_file.exists():
         example = PROJECT_DIR / "env.example"
@@ -94,8 +95,16 @@ def main() -> None:
 
         load_dotenv(env_file, override=True)
 
-    # --- Pre-flight checks ---
-    sys.path.insert(0, str(PROJECT_DIR))
+    if not args.no_db_sync:
+        from api_view.db_bootstrap import sync_database_dates
+
+        _log("Synchronizing travel database dates...")
+        db_path = sync_database_dates()
+        _log(f"Database ready: {db_path}")
+
+    if args.sync_db_only:
+        return
+
     from demo.health import check_mongodb, check_redis
 
     redis_ok, redis_msg = check_redis()
@@ -105,44 +114,20 @@ def main() -> None:
 
     if not redis_ok or not mongo_ok:
         _log("")
-        _log("Infrastructure not ready. Start Redis and MongoDB first:")
-        _log("  docker run -d --name redis -p 6379:6379 -p 8001:8001 \\")
-        _log("    -v ./data/redis-data:/data redis/redis-stack:latest")
-        _log("  docker run -d --name mongodb -p 27017:27017 \\")
-        _log("    -v ./data/mongodb-data:/data/db mongo:latest")
+        _log("Infrastructure not ready. Ensure Redis and MongoDB are running:")
+        _log("  Redis:   localhost:6379")
+        _log("  MongoDB: localhost:27017")
         _log("")
         if not redis_ok:
             sys.exit(1)
 
-    # --- Seed database ---
-    if not args.no_seed:
-        from demo.seed_database import DB_PATH, seed
-
-        if not DB_PATH.exists() or args.seed_only:
-            _log("Seeding demo SQLite database...")
-            path = seed()
-            _log(f"Database ready: {path}")
-        else:
-            _log(f"Database exists: {DB_PATH}")
-
-    if args.seed_only:
-        return
-
-    # --- Start MCP server ---
-    mcp_proc = _start_process(
-        "mcp",
-        [PYTHON, "-m", "mcp_server.server_main"],
-    )
+    mcp_proc = _start_process("mcp", [PYTHON, "-m", "mcp_server.server_main"])
     if not _wait_for_port("127.0.0.1", 8000, timeout=30, label="MCP server"):
-        _log("MCP server failed to start. Check output above.")
+        _log("MCP server failed to start.")
         _shutdown()
         return
 
-    # --- Start API server ---
-    api_proc = _start_process(
-        "api",
-        [PYTHON, "-m", "api_view.run"],
-    )
+    api_proc = _start_process("api", [PYTHON, "-m", "api_view.run"])
     if not _wait_for_port("127.0.0.1", 8080, timeout=180, label="API server"):
         _log("API server failed to start (agent init may take 1-2 min).")
         _log("Check logs — ensure DEEPSEEK_API_KEY and TAVILY_API_KEY are set in .env")
@@ -164,11 +149,7 @@ def main() -> None:
             _shutdown()
         return
 
-    # --- Start Gradio UI ---
-    ui_proc = _start_process(
-        "ui",
-        [PYTHON, "-m", "gradio_ui.run"],
-    )
+    ui_proc = _start_process("ui", [PYTHON, "-m", "gradio_ui.run"])
     if not _wait_for_port("0.0.0.0", 7860, timeout=60, label="Gradio UI"):
         _log("Gradio UI failed to start.")
         _shutdown()
@@ -182,7 +163,6 @@ def main() -> None:
     _log("  MCP:      http://127.0.0.1:8000/mcp")
     _log("=" * 60)
     _log("Press Ctrl+C to stop all services.")
-    _log("")
 
     try:
         while True:

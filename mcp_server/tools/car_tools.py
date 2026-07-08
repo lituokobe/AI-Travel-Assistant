@@ -1,7 +1,7 @@
 from sqlite3 import connect
 from datetime import date, datetime
 from fastmcp import FastMCP
-from mcp_server.tools import db
+from data.data_base import db
 
 GROUP_NAME = "car"
 

@@ -3,7 +3,7 @@ from datetime import date, datetime
 import pytz
 from fastmcp import FastMCP
 from langchain_core.runnables import RunnableConfig
-from mcp_server.tools import db
+from data.data_base import db
 
 GROUP_NAME = "flights"
 

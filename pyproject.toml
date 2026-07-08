@@ -24,4 +24,25 @@ dependencies = [
     "uvicorn>=0.34.0",
     "sse-starlette>=2.2.0",
     "gradio>=5.20.0",
+    "pandas>=3.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["test"]
+pythonpath = ["."]
+markers = [
+    "integration: tests that touch the real SQLite backup (slower)",
+]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient`:DeprecationWarning:starlette.testclient",
 ]

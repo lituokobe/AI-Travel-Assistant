@@ -21,12 +21,8 @@ ENABLE_MODEL_THINKING = os.getenv("ENABLE_MODEL_THINKING", "true").lower() in (
 )
 
 
-def _thinking_kwargs(enabled: bool) -> dict:
-    return {
-        "extra_body": {
-            "thinking": {"type": "enabled" if enabled else "disabled"},
-        }
-    }
+def _thinking_extra_body(enabled: bool) -> dict:
+    return {"thinking": {"type": "enabled" if enabled else "disabled"}}
 
 
 def apply_model_overrides() -> dict[str, bool]:
@@ -39,7 +35,7 @@ def apply_model_overrides() -> dict[str, bool]:
         api_key=agent_config.DEEPSEEK_API_KEY,
         base_url=agent_config.DEEPSEEK_BASE_URL,
         max_tokens=2560000,
-        model_kwargs=_thinking_kwargs(ENABLE_MODEL_THINKING),
+        extra_body=_thinking_extra_body(ENABLE_MODEL_THINKING),
     )
 
     # Summary model stays fast — thinking off for background memory updates
@@ -49,7 +45,7 @@ def apply_model_overrides() -> dict[str, bool]:
         api_key=agent_config.DEEPSEEK_API_KEY,
         base_url=agent_config.DEEPSEEK_BASE_URL,
         max_tokens=2560000,
-        model_kwargs=_thinking_kwargs(False),
+        extra_body=_thinking_extra_body(False),
     )
 
     return {

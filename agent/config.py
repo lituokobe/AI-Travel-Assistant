@@ -65,11 +65,7 @@ MAIN_MODEL = ChatOpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
     max_tokens=2560000,
-    model_kwargs={
-        "extra_body": {
-            "thinking": {"type": "disabled"}
-        }
-    }
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 # LLM for summarization
@@ -79,17 +75,20 @@ SUMMARY_MODEL = ChatOpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
     max_tokens=2560000,
-    model_kwargs={
-        "extra_body": {
-            "thinking": {"type": "disabled"}
-        }
-    }
+    extra_body={"thinking": {"type": "disabled"}},
 )
 
 # ---------- Sandbox config ----------
-# OpenSandbox connection
+# OpenSandbox connection (set SANDBOX_DOMAIN in .env — never commit the real URL)
+SANDBOX_DOMAIN = os.getenv("SANDBOX_DOMAIN", "")
+if not SANDBOX_DOMAIN:
+    raise ValueError(
+        "SANDBOX_DOMAIN is not set. Add it to your .env file "
+        "(see env.example)."
+    )
+
 SANDBOX_CONFIG = ConnectionConfigSync(
-    domain="http://47.99.102.45:8080",#"http://39.100.100.28:8080",
+    domain=SANDBOX_DOMAIN,
     use_server_proxy=True,
     request_timeout=timedelta(seconds=60),
     transport=httpx.HTTPTransport(limits=httpx.Limits(max_connections=20)),

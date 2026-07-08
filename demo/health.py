@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import socket
 import sqlite3
-from pathlib import Path
-
 import pymongo
 import redis
-
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_DIR / "mcp_server" / "travel_new.sqlite"
+from data.data_base import backup_file, local_file
 
 
 def _port_open(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -40,10 +36,15 @@ def check_mongodb(uri: str = "mongodb://localhost:27017") -> tuple[bool, str]:
 
 
 def check_database() -> tuple[bool, str]:
-    if not DB_PATH.exists():
-        return False, f"SQLite DB missing: {DB_PATH}"
+    if not backup_file:
+        return False, "Backup database path is not configured"
     try:
-        conn = sqlite3.connect(DB_PATH)
+        from pathlib import Path
+
+        backup = Path(backup_file)
+        if not backup.exists():
+            return False, f"Backup SQLite DB missing: {backup_file}"
+        conn = sqlite3.connect(local_file if Path(local_file).exists() else backup_file)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM flights")
         count = cur.fetchone()[0]

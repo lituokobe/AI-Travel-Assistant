@@ -24,6 +24,9 @@ register_activity_tools(mcp)
 
 
 def main():
+    from data.data_base.init_db import update_dates
+
+    update_dates()
 
     # start Streamable HTTP service
     mcp.run(
