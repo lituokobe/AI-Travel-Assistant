@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -17,8 +17,8 @@ os.environ.setdefault("SANDBOX_DOMAIN", "http://test-sandbox:8080")
 # Patch persistence backends before agent.config is imported by test modules.
 _mock_redis = MagicMock()
 _mock_redis.configure_client = MagicMock()
-_mock_redis.setup = MagicMock()
-_redis_patcher = patch("langgraph.checkpoint.redis.RedisSaver", return_value=_mock_redis)
+_mock_redis.setup = AsyncMock()
+_redis_patcher = patch("langgraph.checkpoint.redis.AsyncRedisSaver", return_value=_mock_redis)
 _redis_patcher.start()
 
 _mock_mongo_client = MagicMock()
@@ -28,7 +28,6 @@ _mongo_patcher = patch("pymongo.MongoClient", return_value=_mock_mongo_client)
 _mongo_patcher.start()
 
 import pytest
-from unittest.mock import AsyncMock
 
 
 @pytest.fixture

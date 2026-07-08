@@ -178,7 +178,7 @@ def _init_agent() -> str:
 
 
 def create_app() -> gr.Blocks:
-    with gr.Blocks(title="AI Travel Assistant", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="AI Travel Assistant") as demo:
         gr.Markdown(
             "# ✈️ AI Travel Assistant\n"
             "Chat with the travel concierge agent. The **Thinking Process** panel shows "
@@ -190,7 +190,6 @@ def create_app() -> gr.Blocks:
                 chatbot = gr.Chatbot(
                     label="Chat",
                     height=480,
-                    type="messages",
                 )
                 msg = gr.Textbox(
                     label="Your message",
@@ -274,7 +273,18 @@ def create_app() -> gr.Blocks:
 
 def main():
     app = create_app()
-    app.launch(server_name=GRADIO_HOST, server_port=GRADIO_PORT, share=False)
+    # First element must be a Font object so Gradio's built-in-theme equality
+    # check (Font.__eq__) doesn't crash comparing Font vs str. Font() declares
+    # the name for CSS font-family without loading anything — correct for a
+    # system font. Calibri is a Windows font; the fallbacks cover macOS/Linux.
+    simple_font = (gr.themes.Font("Calibri"), "Arial", "Helvetica", "sans-serif")
+    simple_mono = (gr.themes.Font("Consolas"), "Menlo", "Courier New", "monospace")
+    app.launch(
+        server_name=GRADIO_HOST,
+        server_port=GRADIO_PORT,
+        share=False,
+        theme=gr.themes.Soft(font=simple_font, font_mono=simple_mono),
+    )
 
 
 if __name__ == "__main__":

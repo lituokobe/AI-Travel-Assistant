@@ -54,6 +54,9 @@ async def create_main_agent(
     """
     logger.info("=== Start to build AI travel assistant ===")
 
+    # Ensure the async Redis checkpointer indices exist before the graph runs.
+    await CHECKPOINTER.setup()
+
     # ---- Phase 1: Sandbox configuration ----
     logger.info("Phase 1/11: Sandbox configuration...")
     try:

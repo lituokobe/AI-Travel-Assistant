@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from langgraph.checkpoint.redis import RedisSaver
+from langgraph.checkpoint.redis import AsyncRedisSaver
 from langgraph.store.mongodb import MongoDBStore
 
 from opensandbox.config import ConnectionConfigSync
@@ -112,9 +112,11 @@ collection = db[MONGODB_COLLECTION] # only pointers are created
 STORE = MongoDBStore(collection=collection)
 
 # Redis for checkpoint (short term memory).
-CHECKPOINTER = RedisSaver()
-CHECKPOINTER.configure_client(redis_url=REDIS_URI)
-CHECKPOINTER.setup()
+# Use the async saver: the agent runs via astream/ainvoke, which call the
+# async checkpointer methods (aget_tuple/aput). The sync RedisSaver does not
+# implement those and the base class raises NotImplementedError. setup() is
+# async, so it is awaited in create_main_agent() rather than at import time.
+CHECKPOINTER = AsyncRedisSaver(redis_url=REDIS_URI)
 
 # ---------- user skill persistence ----------
 PERSISTED_SKILLS_ROOT = "/persisted-skills"

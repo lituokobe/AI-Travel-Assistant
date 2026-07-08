@@ -20,6 +20,7 @@ from api_view.models.requests import ResumeRequest, UserContext
 from api_view.services.message_converter import langchain_to_api_message, state_messages_to_api
 from api_view.services.session_service import ensure_session, touch_session
 from api_view.services.stream_mapper import map_agent_stream, _extract_interrupts
+from agent.logger import logger
 
 
 class ChatService:
@@ -32,6 +33,14 @@ class ChatService:
         agent = await lifecycle_manager.ensure_ready()
         tid = thread_id or new_thread_id()
         ensure_session(tid, user.user_id, message)
+
+        logger.info(
+            "[user] thread=%s user=%s(%s) message=%r",
+            tid,
+            user.user_id,
+            user.username,
+            message,
+        )
 
         config = create_config(tid, passenger_id=user.passenger_id)
         context = create_travel_context(user.user_id, user.username)
@@ -62,6 +71,10 @@ class ChatService:
                 )
             )
 
+        assistant_replies = [m for m in messages if m.role == "assistant" and m.content]
+        if assistant_replies:
+            logger.info("[reply|%s] %s", tid, assistant_replies[-1].content)
+
         return ChatResponse(thread_id=tid, messages=messages)
 
     async def stream(
@@ -73,6 +86,14 @@ class ChatService:
         agent = await lifecycle_manager.ensure_ready()
         tid = thread_id or new_thread_id()
         ensure_session(tid, user.user_id, message)
+
+        logger.info(
+            "[user] thread=%s user=%s(%s) message=%r",
+            tid,
+            user.user_id,
+            user.username,
+            message,
+        )
 
         config = create_config(tid, passenger_id=user.passenger_id)
         context = create_travel_context(user.user_id, user.username)
@@ -92,6 +113,14 @@ class ChatService:
         agent = await lifecycle_manager.ensure_ready()
         config = create_config(request.thread_id, passenger_id=request.user.passenger_id)
         context = create_travel_context(request.user.user_id, request.user.username)
+
+        logger.info(
+            "[resume] thread=%s user=%s(%s) value=%r",
+            request.thread_id,
+            request.user.user_id,
+            request.user.username,
+            request.resume_value,
+        )
 
         result = await agent.ainvoke(
             Command(resume=request.resume_value),
@@ -118,12 +147,24 @@ class ChatService:
                 )
             )
 
+        assistant_replies = [m for m in messages if m.role == "assistant" and m.content]
+        if assistant_replies:
+            logger.info("[reply|%s] %s", request.thread_id, assistant_replies[-1].content)
+
         return ChatResponse(thread_id=request.thread_id, messages=messages)
 
     async def resume_stream(self, request: ResumeRequest) -> AsyncIterator[str]:
         agent = await lifecycle_manager.ensure_ready()
         config = create_config(request.thread_id, passenger_id=request.user.passenger_id)
         context = create_travel_context(request.user.user_id, request.user.username)
+
+        logger.info(
+            "[resume] thread=%s user=%s(%s) value=%r",
+            request.thread_id,
+            request.user.user_id,
+            request.user.username,
+            request.resume_value,
+        )
 
         async for event in map_agent_stream(
             agent,

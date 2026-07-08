@@ -31,6 +31,7 @@ dependencies = [
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
+    "httpx2>=2.5.0",
 ]
 
 [tool.uv]
@@ -42,7 +43,4 @@ testpaths = ["test"]
 pythonpath = ["."]
 markers = [
     "integration: tests that touch the real SQLite backup (slower)",
-]
-filterwarnings = [
-    "ignore:Using `httpx` with `starlette.testclient`:DeprecationWarning:starlette.testclient",
 ]

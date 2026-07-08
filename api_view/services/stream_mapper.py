@@ -21,10 +21,14 @@ from api_view.models.events import (
     StreamReasoningEvent,
     StreamThinkingEvent,
 )
+from agent.logger import logger
 
 
 def _sse(event: Any) -> str:
-    return f"data: {event.model_dump_json()}\n\n"
+    # Yield the raw JSON payload only. EventSourceResponse adds the
+    # `data: ` prefix + blank-line separator itself; pre-formatting it here
+    # would double-encode to `data: data: {...}` and break clients.
+    return event.model_dump_json()
 
 
 def _source_from_metadata(metadata: dict[str, Any] | None) -> str:
@@ -166,6 +170,15 @@ async def map_agent_stream(
     """Stream agent execution as SSE events."""
     full_response = ""
     pending_tool_calls: dict[str, dict[str, Any]] = {}
+    # Buffer model chain-of-thought chunks and flush them as a single log
+    # line so the reasoning reads as one block instead of hundreds of
+    # tiny token-sized log entries.
+    reasoning_buf: list[str] = []
+
+    def _flush_reasoning(src: str) -> None:
+        if reasoning_buf:
+            logger.info("[reasoning|%s] %s", src, "".join(reasoning_buf))
+            reasoning_buf.clear()
 
     try:
         async for chunk in agent.astream(
@@ -191,6 +204,7 @@ async def map_agent_stream(
                 if isinstance(msg_chunk, (AIMessageChunk, AIMessage)):
                     reasoning = _extract_reasoning(msg_chunk)
                     if reasoning:
+                        reasoning_buf.append(reasoning)
                         yield _sse(StreamReasoningEvent(content=reasoning, source=source))
                         yield _sse(
                             StreamThinkingEvent(
@@ -211,7 +225,9 @@ async def map_agent_stream(
                             tc_id = tc.get("id") or tc.get("index", "")
                             name = tc.get("name", "")
                             if name:
+                                _flush_reasoning(source)
                                 pending_tool_calls[str(tc_id)] = {"name": name, "args": ""}
+                                logger.info("[tool_start|%s] %s", source, name)
                                 yield _sse(
                                     StreamToolStartEvent(
                                         tool_call_id=str(tc_id),
@@ -226,6 +242,7 @@ async def map_agent_stream(
                                 key = str(tc_id)
                                 if key in pending_tool_calls:
                                     pending_tool_calls[key]["args"] += args_str
+                                logger.info("[tool_args] %s", args_str)
                                 yield _sse(StreamToolArgsEvent(args=args_str))
 
                     if isinstance(msg_chunk, AIMessage) and msg_chunk.tool_calls:
@@ -233,6 +250,8 @@ async def map_agent_stream(
                             tc_id = tc.get("id", "")
                             name = tc.get("name", "")
                             args = tc.get("args", {})
+                            _flush_reasoning(source)
+                            logger.info("[tool_start|%s] %s", source, name)
                             yield _sse(
                                 StreamToolStartEvent(
                                     tool_call_id=tc_id,
@@ -241,13 +260,22 @@ async def map_agent_stream(
                                 )
                             )
                             yield _sse(_thinking_for_tool(name, args, source))
-                            yield _sse(StreamToolArgsEvent(args=_format_tool_args(args)))
+                            args_str = _format_tool_args(args)
+                            logger.info("[tool_args] %s", args_str)
+                            yield _sse(StreamToolArgsEvent(args=args_str))
 
                 elif isinstance(msg_chunk, ToolMessage):
+                    _flush_reasoning(source)
                     result_text = (
                         msg_chunk.content
                         if isinstance(msg_chunk.content, str)
                         else json.dumps(msg_chunk.content, ensure_ascii=False)
+                    )
+                    logger.info(
+                        "[tool_result|%s] %s: %s",
+                        source,
+                        msg_chunk.name or "tool",
+                        result_text[:500],
                     )
                     yield _sse(
                         StreamToolResultEvent(
@@ -273,10 +301,12 @@ async def map_agent_stream(
                         continue
                     todos = update.get("todos")
                     if todos is not None:
-                        yield _sse(StreamPlanEvent(todos=todos, source=source))
+                        _flush_reasoning(source)
                         summary = ", ".join(
                             f"[{t.get('status', '?')}] {t.get('content', '')}" for t in todos
                         )
+                        logger.info("[plan|%s] %s", source, summary)
+                        yield _sse(StreamPlanEvent(todos=todos, source=source))
                         yield _sse(
                             StreamThinkingEvent(
                                 category="plan",
@@ -290,9 +320,21 @@ async def map_agent_stream(
         if state and state.interrupts:
             for intr in state.interrupts:
                 for event in _extract_interrupts({"__interrupt__": [intr]}, thread_id):
+                    _flush_reasoning("main")
+                    if isinstance(event, StreamInterruptEvent):
+                        logger.info(
+                            "[interrupt|%s] id=%s payload=%s",
+                            event.interrupt_type,
+                            event.interrupt_id,
+                            json.dumps(event.payload, ensure_ascii=False),
+                        )
                     yield _sse(event)
 
+        _flush_reasoning("main")
+        logger.info("[done|%s] %s", thread_id, full_response)
         yield _sse(StreamDoneEvent(thread_id=thread_id, content=full_response))
 
     except Exception as exc:
+        _flush_reasoning("main")
+        logger.error("[error] %s", exc, exc_info=True)
         yield _sse(StreamErrorEvent(message=str(exc)))
