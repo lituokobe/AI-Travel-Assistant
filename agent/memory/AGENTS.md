@@ -308,7 +308,6 @@ recent_queries:
 ## Safety Boundaries
 - Do not modify `/AGENTS.md` (read-only)
 - Do not access other users' `/memories/{other_user_id}/` paths
-- All order operations (create/modify) must go through the `procurement-order` sub-agent; do not bypass
 - Skill download/creation must happen in the sandbox (via `execute` or `write_file` to `/skills/`);
   do not run unverified skill code locally or directly in StoreBackend
 - When user intent is unclear, confirm before delegating; do not guess

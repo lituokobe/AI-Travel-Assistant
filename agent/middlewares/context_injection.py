@@ -1,10 +1,10 @@
 """
 Runtime context injection middleware.
 
-Extracts user_id and username from runtime.context (ProcurementContext)
-and injects them as a SystemMessage when the Agent starts. This allows the
-Agent to know the current user's identity without calling any tools, so it
-can correctly read from and write to /memories/{user_id}/preferences.md.
+Extracts user_id and username from runtime.context and injects them as a
+SystemMessage when the Agent starts. This allows the Agent to know the 
+current user's identity without calling any tools, so it can correctly 
+read from and write to /memories/{user_id}/preferences.md.
 
 Usage:
 from agent.middlewares.context_injection import ContextInjectionMiddleware
@@ -44,7 +44,7 @@ class ContextInjectionMiddleware(AgentMiddleware):
             f"Current username: {username}\n"
             f"User preferences file: /memories/{user_id}/preferences.md\n"
             f"\nPlease first use read_file to read the preferences file above to understand the user's preferences."
-            f"\n(recent_suppliers and recent_queries are maintained automatically by the system; you do not need to update them manually.)"
+            f"\n(recent_destinations and recent_queries are maintained automatically by the system; you do not need to update them manually.)"
         )
         return {"messages": [SystemMessage(content=notice)]}
 
