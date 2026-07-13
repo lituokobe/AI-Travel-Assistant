@@ -61,11 +61,10 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 # main agent LLM
 MAIN_MODEL = ChatOpenAI(
     model="deepseek-v4-pro",
-    temperature=1.1,
+    temperature=0.6,
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
-    max_tokens=2560000,
-    extra_body={"thinking": {"type": "disabled"}},
+    max_tokens=2560000
 )
 
 # LLM for summarization
@@ -121,6 +120,14 @@ CHECKPOINTER = AsyncRedisSaver(redis_url=REDIS_URI)
 # ---------- user skill persistence ----------
 PERSISTED_SKILLS_ROOT = "/persisted-skills"
 SKILLS_STORE_NAMESPACE = ("skills",)
+
+# Sentinel used when runtime.context.user_id is missing.
+# A clearly invalid, dedicated namespace so unidentified traffic is QUARANTINED
+# and never silently mixed into a real user's memories. Using a real person's
+# name here would risk cross-contamination; this sentinel makes leaked data
+# easy to identify and clean up.
+ANONYMOUS_USER_ID = "__anonymous__"
+
 SCOPE_MAP = {
     "main": "main",
     "car-agent": "car",

@@ -18,9 +18,16 @@ from __future__ import annotations
 from pathlib import Path
 import yaml
 from agent.logger import logger
+from agent.tools.hitl_tools import request_travel_info
 
 # YAML configuration file directory
 CONFIGS_DIR = Path(__file__).parent / "configs"
+
+# Tools automatically injected into every sub-agent.
+# Listed here once so each sub-agent YAML does not have to repeat them.
+# Currently this is the human-in-the-loop escalation tool shared by all
+# booking specialists.
+COMMON_SUBAGENT_TOOLS = [request_travel_info]
 
 
 def load_subagent_configs(
@@ -90,10 +97,12 @@ def resolve_subagent_tools(
     Resolve tool name strings in the YAML configuration into actual callable tool objects.
 
     Matching rules:
-    - Each string in the YAML 'tools' list acts as a prefix/substring to match
-      against the .name attribute of available_tools
-    - e.g., "supplier_query" matches a tool named "supplier_query"
-    - e.g., "supplier_" matches all tools starting with "supplier_"
+    - Each string in the YAML 'tools' list must EXACTLY match the .name attribute of
+      an available tool. This is stricter than the previous substring match and avoids
+      accidental cross-matches between similarly named tools (e.g. a 'car_' pattern
+      silently matching a 'rental_car_*' tool).
+    - Tools listed in COMMON_SUBAGENT_TOOLS (e.g. request_travel_info) are appended
+      automatically to every sub-agent and do not need to be declared in YAML.
 
     Args:
         configs: List of raw configurations returned by load_subagent_configs().
@@ -121,16 +130,20 @@ def resolve_subagent_tools(
         resolved_tools = []
 
         for pattern in tool_names:
-            matched = False
-            for tool_name, tool_obj in tool_index.items():
-                if pattern in tool_name:  # Substring match
-                    resolved_tools.append(tool_obj)
-                    matched = True
-            if not matched:
+            # Exact match only — fail loudly with a warning instead of
+            # silently picking up unrelated tools.
+            tool_obj = tool_index.get(pattern)
+            if tool_obj is not None:
+                resolved_tools.append(tool_obj)
+            else:
                 logger.warning(
                     f"Sub-agent '{config['name']}': "
-                    f"Tool pattern '{pattern}' did not match any available tools"
+                    f"Tool '{pattern}' did not exactly match any available tool"
                 )
+
+        # Append shared tools that every sub-agent needs (HITL escalation, etc.)
+        for common_tool in COMMON_SUBAGENT_TOOLS:
+            resolved_tools.append(common_tool)
 
         # Deduplicate (preserve order)
         seen = set()
@@ -165,10 +178,12 @@ def resolve_subagent_tools(
         if agent_middleware:
             subagent["middleware"] = agent_middleware
 
+        common_names = [getattr(t, "name", "?") for t in COMMON_SUBAGENT_TOOLS]
         subagents.append(subagent)
         logger.info(
             f"Sub-agent '{config['name']}' resolved: "
-            f"{len(unique_tools)} tools, "
+            f"{len(unique_tools)} tools "
+            f"(incl. common: {common_names}), "
             f"{len(config.get('skills', []))} skills"
         )
 

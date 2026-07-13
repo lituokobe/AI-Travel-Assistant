@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: flights_subagent (Flight Booking Specialist)
+# Sub-Agent Configuration: flights-agent (Flight Booking Specialist)
 # ============================================================
 # Defines the full configuration for the flights sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: flights_subagent
+name: flights-agent
 
 description: >
   Flight booking management specialist. Handles retrieving a passenger's existing
@@ -24,7 +24,7 @@ tools:
   - flights_search               # Search flights by route and schedule
   - flights_update               # Rebook ticket to a new flight
   - flights_cancel               # Cancel a passenger ticket
-  - request_travel_info          # Supplement missing travel data via human-in-the-loop
+  # request_travel_info is auto-injected by the sub-agent loader for all sub-agents (HITL)
 
 # Human-in-the-loop configuration
 # flights_update / flights_cancel pause execution and wait for human approval

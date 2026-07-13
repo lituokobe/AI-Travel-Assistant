@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent.backends.sandbox_setup import setup_sandbox
 from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL, \
-    MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER
+    MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER, ANONYMOUS_USER_ID
 from agent.logger import logger
 from agent.memory.prompts import system_prompt
 from agent.middleware_config import create_sub_agent_middleware
@@ -20,7 +20,6 @@ from agent.schema import TravelContext
 from agent.subagents.loader import load_subagent_configs, resolve_subagent_tools
 from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
-from agent.tools.hitl_tools import request_travel_info
 from agent.tools.mcp_client import load_mcp_tools
 from agent.tools.web_search import web_search
 
@@ -33,7 +32,7 @@ async def create_main_agent(
     """
     async graph factory to create main travel agent.
 
-    When called, execute complete 11-stage streamline:
+    When called, execute complete 10-stage streamline:
     1. Sandbox configuration
     2. Write AGENTS.md to sandbox
     3. CompositeBackend
@@ -58,7 +57,7 @@ async def create_main_agent(
     await CHECKPOINTER.setup()
 
     # ---- Phase 1: Sandbox configuration ----
-    logger.info("Phase 1/11: Sandbox configuration...")
+    logger.info("Phase 1/10: Sandbox configuration...")
     try:
         sandbox_backend = setup_sandbox(SANDBOX_CONFIG, sandbox_id=sandbox_id)
     except Exception as e:
@@ -68,7 +67,7 @@ async def create_main_agent(
 
     # ---- Phase 2: Write AGENTS.md to sandbox ----
     # AGENTS.md in sandbox will be hit by CompositeBackend routing of default
-    logger.info("Phase 2/11: Write AGENTS.md to sandbox...")
+    logger.info("Phase 2/10: Write AGENTS.md to sandbox...")
     ag_md_content = LOCAL_AGENTS_MD.read_text(encoding="utf-8")
     sandbox_backend.upload_files([("/AGENTS.md", ag_md_content.encode("utf-8"))])
     logger.info("  AGENTS.md is uploaded to sandbox")
@@ -78,7 +77,7 @@ async def create_main_agent(
     # /memories/          → StoreBackend (isolate user preference by user_id)
     # /persisted-skills/  → StoreBackend (organize skills by Agent scope)
     # Other paths (temp files, file execution) save in sandbox
-    logger.info("Phase 3: Configure CompositeBackend (memories + persisted-skills → Store)...")
+    logger.info("Phase 3/10: Configure CompositeBackend (memories + persisted-skills → Store)...")
     logger.info(f"🔍 DEBUG: STORE type={type(STORE)}, sandbox_id={sandbox_id}")
 
     backend = lambda rt: CompositeBackend(
@@ -86,7 +85,7 @@ async def create_main_agent(
         routes={
             "/memories/": StoreBackend(
                 runtime=rt,
-                namespace=lambda rt: (getattr(rt.runtime.context, 'user_id', 'lituokobe'),),
+                namespace=lambda rt: (getattr(rt.runtime.context, 'user_id', ANONYMOUS_USER_ID),),
             ),
             "/persisted-skills/": StoreBackend(
                 runtime=rt,
@@ -123,7 +122,7 @@ async def create_main_agent(
         raise
 
     # ---- Phase 4: Load MCP tools ----
-    logger.info("Phase 4/11: Load MCP tools...")
+    logger.info("Phase 4/10: Load MCP tools...")
     try:
         all_tools, flights_tools, car_tools, hotels_tools, activity_tools = (
             await load_mcp_tools()
@@ -143,13 +142,14 @@ async def create_main_agent(
 
     # ---- Phase 5: Build tool pool ----
     logger.info("Phase 5/10: Build tool pool...")
+    # request_travel_info is injected into every sub-agent by the loader
+    # (COMMON_SUBAGENT_TOOLS), so it does not need to be in this pool.
     available_tools = (
         list(flights_tools)
         + list(car_tools)
         + list(hotels_tools)
         + list(activity_tools)
         + [web_search]
-        + [request_travel_info]
         + [assign_skill]
         + [download_sandbox_file]
     )
@@ -168,10 +168,10 @@ async def create_main_agent(
     extra_middleware = {
         agent_name: create_sub_agent_middleware()
         for agent_name in (
-            "car_subagent",
-            "flights_subagent",
-            "hotels_subagent",
-            "activity_subagent",
+            "car-agent",
+            "flights-agent",
+            "hotels-agent",
+            "activity-agent",
         )
     }
 

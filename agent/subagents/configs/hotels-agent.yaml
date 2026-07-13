@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: hotels_subagent (Hotel Booking Specialist)
+# Sub-Agent Configuration: hotels-agent (Hotel Booking Specialist)
 # ============================================================
 # Defines the full configuration for the hotels sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: hotels_subagent
+name: hotels-agent
 
 description: >
   Hotel booking management specialist. Handles searching available hotels,
@@ -23,7 +23,7 @@ tools:
   - hotels_book                  # Book a hotel by hotel ID
   - hotels_update                # Update check-in/check-out dates
   - hotels_cancel                # Cancel a hotel booking
-  - request_travel_info          # Supplement missing travel data via human-in-the-loop
+  # request_travel_info is auto-injected by the sub-agent loader for all sub-agents (HITL)
 
 # Human-in-the-loop configuration
 # hotels_book / hotels_update pause execution and wait for human approval

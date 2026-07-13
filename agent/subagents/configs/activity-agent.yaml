@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: activity_subagent (Activity Recommendation Specialist)
+# Sub-Agent Configuration: activity-agent (Activity Recommendation Specialist)
 # ============================================================
 # Defines the full configuration for the activity recommendations sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: activity_subagent
+name: activity-agent
 
 description: >
   Activity recommendation and booking specialist. Handles searching curated activity
@@ -24,7 +24,7 @@ tools:
   - activity_book                    # Book a activity recommendation by ID
   - activity_update                  # Update activity recommendation details
   - activity_cancel                  # Cancel a activity booking
-  - request_travel_info          # Supplement missing travel data via human-in-the-loop
+  # request_travel_info is auto-injected by the sub-agent loader for all sub-agents (HITL)
 
 # Human-in-the-loop configuration
 # activity_book / activity_update pause execution and wait for human approval

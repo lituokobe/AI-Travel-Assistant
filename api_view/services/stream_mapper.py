@@ -35,7 +35,10 @@ def _source_from_metadata(metadata: dict[str, Any] | None) -> str:
     if not metadata:
         return "main"
     node = metadata.get("langgraph_node", "")
-    if "subagent" in node or node.endswith("_subagent"):
+    # Sub-agent node names use the hyphen "-agent" suffix (e.g. "car-agent").
+    # The legacy "_subagent" check is kept as a fallback for any in-flight
+    # sessions created before the rename.
+    if node.endswith("-agent") or node.endswith("_subagent"):
         return node
     checkpoint_ns = metadata.get("checkpoint_ns", "")
     if checkpoint_ns:

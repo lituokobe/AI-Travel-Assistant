@@ -1,12 +1,12 @@
 # ============================================================
-# Sub-Agent Configuration: car_subagent (Car Rental Specialist)
+# Sub-Agent Configuration: car-agent (Car Rental Specialist)
 # ============================================================
 # Defines the full configuration for the car rental sub-agent.
 # At runtime, the YAML loader reads this file and converts it
 # into a DeepAgents SubAgent dict.
 # ============================================================
 
-name: car_subagent
+name: car-agent
 
 description: >
   Car rental management specialist. Handles searching available car rentals,
@@ -24,7 +24,7 @@ tools:
   - car_book                   # Book a car rental by rental ID
   - car_update                 # Update rental start/end dates
   - car_cancel                 # Cancel a car rental booking
-  - request_travel_info        # Supplement missing travel data via human-in-the-loop
+  # request_travel_info is auto-injected by the sub-agent loader for all sub-agents (HITL)
 
 # Human-in-the-loop configuration
 # car_book / car_update pause execution and wait for human approval before running
