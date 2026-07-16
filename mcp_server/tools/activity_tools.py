@@ -3,30 +3,32 @@ from fastmcp import FastMCP
 from data.data_base import db
 
 GROUP_NAME = "activity"
+CATALOG_TABLE = "trip_recommendations"
+
 
 def register_activity_tools(mcp: FastMCP):
     """Register all the tools for activity management"""
 
     @mcp.tool(name=f"{GROUP_NAME}_search")
     def search_activity_recommendations(
-            location: str|None = None,
-            name: str|None = None,
-            keywords: str|None = None,
+        location: str | None = None,
+        name: str | None = None,
+        keywords: str | None = None,
     ) -> list[dict]:
         """
-        Search activities on location, name and keywords.
+        Search activity catalog by location, name and keywords.
 
         Parameters:
-        - location (Optional[str]): location of the activity, default is None
-        - name (Optional[str]): name of the activity, default is None
-        - keywords: keywords relevant to the activity, default is None
+        - location (Optional[str])
+        - name (Optional[str])
+        - keywords: comma-separated keywords
 
         Returns:
-        - list[dict]: list of dictionaries with activities that satisfy the requirement
+        - list[dict]: matching trip_recommendations rows
         """
         conn = connect(db)
         cursor = conn.cursor()
-        query = "SELECT * FROM activity_recommendations WHERE 1=1"
+        query = f"SELECT * FROM {CATALOG_TABLE} WHERE 1=1"
         params = []
 
         if location:
@@ -43,92 +45,157 @@ def register_activity_tools(mcp: FastMCP):
 
         cursor.execute(query, params)
         results = cursor.fetchall()
-
+        column_names = [column[0] for column in cursor.description]
         conn.close()
 
-        return [
-            dict(zip([column[0] for column in cursor.description], row)) for row in results
-        ]
+        return [dict(zip(column_names, row)) for row in results]
 
-
-    @mcp.tool(name=f"{GROUP_NAME}_book")
-    def book_activity(recommendation_id: int) -> str:
+    @mcp.tool(name=f"{GROUP_NAME}_fetch")
+    def fetch_user_activity_reservations(user_id: str) -> list[dict]:
         """
-        Book an activity based on recommendation id.
+        List activity reservations for a user.
 
         Parameters:
-        - recommendation_id (int): recommendation id of the activity to book
-
-        Returns:
-        - str: a string to indicate if the activity is successfully booked
+        - user_id (str): conversation user id
         """
+        if not user_id:
+            raise ValueError("user_id is required")
+
         conn = connect(db)
         cursor = conn.cursor()
-
         cursor.execute(
-            "UPDATE activity_recommendations SET booked = 1 WHERE id = ?", (recommendation_id,)
+            f"""
+            SELECT
+                r.id AS reservation_id,
+                r.user_id,
+                r.recommendation_id,
+                r.details AS reservation_details,
+                r.status,
+                t.name,
+                t.location,
+                t.keywords,
+                t.details AS catalog_details
+            FROM activity_reservations r
+            JOIN {CATALOG_TABLE} t ON t.id = r.recommendation_id
+            WHERE r.user_id = ? AND r.status = 'booked'
+            """,
+            (user_id,),
         )
-        conn.commit()
+        rows = cursor.fetchall()
+        column_names = [column[0] for column in cursor.description]
+        conn.close()
+        return [dict(zip(column_names, row)) for row in rows]
 
-        if cursor.rowcount > 0:
-            conn.close()
-            return f"Recommended activity  {recommendation_id} is booked successfully"
-        else:
+    @mcp.tool(name=f"{GROUP_NAME}_book")
+    def book_activity(
+        user_id: str,
+        recommendation_id: int,
+        details: str | None = None,
+    ) -> str:
+        """
+        Create an activity reservation for a user.
+
+        Parameters:
+        - user_id (str)
+        - recommendation_id (int): catalog id from activity_search
+        - details (Optional[str]): optional notes on the reservation
+        """
+        if not user_id:
+            raise ValueError("user_id is required")
+
+        conn = connect(db)
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT id FROM {CATALOG_TABLE} WHERE id = ?", (recommendation_id,)
+        )
+        if not cursor.fetchone():
             conn.close()
             return f"Cannot find recommended activity {recommendation_id}"
 
+        cursor.execute(
+            """
+            INSERT INTO activity_reservations
+                (user_id, recommendation_id, details, status)
+            VALUES (?, ?, ?, 'booked')
+            """,
+            (user_id, recommendation_id, details),
+        )
+        reservation_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return (
+            f"Activity reservation created successfully. "
+            f"reservation_id={reservation_id}, recommendation_id={recommendation_id}, "
+            f"user_id={user_id}."
+        )
 
     @mcp.tool(name=f"{GROUP_NAME}_update")
-    def update_activity(recommendation_id: int, details: str) -> str:
+    def update_activity(
+        reservation_id: int,
+        user_id: str,
+        details: str,
+    ) -> str:
         """
-        Update activity details based on recommendation ID.
+        Update details on an existing activity reservation.
 
         Parameters:
-        - hotel_id (int): id of the recommended activity to update
-        - details (str): detailed information of the recommended activity
-
-        Returns:
-        - str: a string to indicate if the activity recommendation is updated successfully.
+        - reservation_id (int): booking id
+        - user_id (str)
+        - details (str): new notes
         """
+        if not user_id:
+            raise ValueError("user_id is required")
+
         conn = connect(db)
         cursor = conn.cursor()
-
         cursor.execute(
-            "UPDATE activity_recommendations SET details = ? WHERE id = ?",
-            (details, recommendation_id),
+            """
+            UPDATE activity_reservations
+            SET details = ?
+            WHERE id = ? AND user_id = ? AND status = 'booked'
+            """,
+            (details, reservation_id, user_id),
         )
         conn.commit()
+        updated = cursor.rowcount
+        conn.close()
 
-        if cursor.rowcount > 0:
-            conn.close()
-            return f"activity recommendation {recommendation_id} is successfully updated"
-        else:
-            conn.close()
-            return f"Cannot find activity recommendation {recommendation_id}"
-
+        if updated > 0:
+            return f"Activity reservation {reservation_id} updated successfully."
+        return (
+            f"Cannot find active activity reservation {reservation_id} "
+            f"for user {user_id}."
+        )
 
     @mcp.tool(name=f"{GROUP_NAME}_cancel")
-    def cancel_activity(recommendation_id: int) -> str:
+    def cancel_activity(reservation_id: int, user_id: str) -> str:
         """
-        Cancel activity recommendation based on ID.
+        Cancel an activity reservation owned by the user.
 
         Parameters:
-        - recommendation_id (int):id of the recommended activity
-
-        Returns:
-        - str: a string to indicate if the recommended activity is canceled successfully.
+        - reservation_id (int)
+        - user_id (str)
         """
+        if not user_id:
+            raise ValueError("user_id is required")
+
         conn = connect(db)
         cursor = conn.cursor()
-
         cursor.execute(
-            "UPDATE activity_recommendations SET booked = 0 WHERE id = ?", (recommendation_id,)
+            """
+            UPDATE activity_reservations
+            SET status = 'cancelled'
+            WHERE id = ? AND user_id = ? AND status = 'booked'
+            """,
+            (reservation_id, user_id),
         )
         conn.commit()
+        updated = cursor.rowcount
+        conn.close()
 
-        if cursor.rowcount > 0:
-            conn.close()
-            return f"Recommended activity  {recommendation_id} is cancelled successfully"
-        else:
-            conn.close()
-            return f"Cannot find activity recommendation {recommendation_id}"
+        if updated > 0:
+            return f"Activity reservation {reservation_id} cancelled successfully."
+        return (
+            f"Cannot find active activity reservation {reservation_id} "
+            f"for user {user_id}."
+        )

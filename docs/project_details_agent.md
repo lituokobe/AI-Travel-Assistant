@@ -35,12 +35,18 @@ It will execute following tasks upon starting:
   - `ModelCallLimitMiddleware`
   - `ToolCallLimitMiddleware`
 
+## Identity & runtime context
+- `TravelContext` carries only `user_id` and `username` (no booking cache).
+- For flight MCP tools, `passenger_id` is the same string as `user_id`.
+- Bookings live only in SQLite. "What have I booked?" → domain `*_fetch` tools.
+- Conversation persistence uses LangGraph Redis checkpointer keyed by `thread_id` in `RunnableConfig.configurable`. Clients may omit `thread_id`; the API auto-generates one and returns it so checkpoints can be inspected in Redis.
+
 ## Sub Agents
 - There are four sub agents that take care different areas of travel tasks for the user:
-  - `car-agent`: Car rental management specialist. Handles searching available car rentals, booking rentals, updating rental dates, and cancelling reservations.
-  - `activity-agent`: Activity recommendation and booking specialist. Handles searching curated activity recommendations, booking activities, updating activity details, and cancelling bookings.
-  - `flights-agent`: Flight booking management specialist. Handles retrieving a passenger's existing tickets, searching available flights, rebooking tickets to new flights, and cancelling tickets.
-  - `hotels-agent`: Hotel booking management specialist. Handles searching available hotels, making reservations, updating check-in/check-out dates, and cancelling bookings.
+  - `car-agent`: Search catalog, fetch/book/update/cancel **per-user** `car_reservations`.
+  - `activity-agent`: Search `trip_recommendations` catalog, fetch/book/update/cancel `activity_reservations`.
+  - `flights-agent`: Fetch/search/**book**/rebook/cancel passenger tickets (`passenger_id` = `user_id`).
+  - `hotels-agent`: Search catalog, fetch/book/update/cancel **per-user** `hotel_reservations`.
 - The sub agents are configured in the YAML files in `./agent/subagents/configs`
 - The sub agents' middleware only include `ModelCallLimitMiddleware` and `ToolCallLimitMiddleware` to apply basic limits
 - The `request_travel_info` human-in-the-loop tool is registered once in the loader (`COMMON_SUBAGENT_TOOLS`) and auto-injected into every sub-agent, so it does not need to be listed in each YAML.
@@ -52,6 +58,9 @@ The agent tools are hosted on the local MCP server at http://127.0.0.1:8000/mcp,
 The sandbox is hosted from a cloud sandbox server with opensandbox by Alibaba.
 
 ## Data and Memory Management
-- The sub agent tools will need to interact with the data base `data/data_base/travel_new.sqlite` to retrieve and update data. This is a simulated database whose dates are refreshed by the demo launcher (`demo/run_demo.py` → `api_view/db_bootstrap.py` → `data.data_base.init_db.update_dates`) before the MCP server starts, not by the agent itself.
-- The short-term memory is stored in Redis.
+- The sub agent tools interact with `data/data_base/travel_new.sqlite`. Dates are refreshed by the demo launcher (`demo/run_demo.py` → `api_view/db_bootstrap.py` → `data.data_base.init_db.update_dates`) before the MCP server starts, not by the agent itself.
+- On each DB sync, empty reservation tables are ensured: `hotel_reservations`, `car_reservations`, `activity_reservations`. Catalog tables no longer use a global `booked` flag.
+- Flights remain passenger-owned via `tickets.passenger_id`.
+- Demo/default user: `user_id=3442 587242`, `username=Luis` (has an existing flight ticket in the seed data).
+- The short-term memory is stored in Redis (by `thread_id`).
 - The long-term memory is stored in MongoDB.

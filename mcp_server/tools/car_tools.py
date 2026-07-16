@@ -5,23 +5,24 @@ from data.data_base import db
 
 GROUP_NAME = "car"
 
+
 def register_car_tools(mcp: FastMCP):
     """Register all the tools for car rental"""
 
     @mcp.tool(name=f"{GROUP_NAME}_search")
     def search_car_rentals(
-            location: str|None = None,
-            name: str|None = None
+        location: str | None = None,
+        name: str | None = None,
     ) -> list[dict]:
         """
-        Search car booking options based on location and the name of the car rental company.
+        Search car rental catalog by location and company name.
 
         Parameters:
-        - location (Optional[str]): location of the rental, default is None
-        - name (Optional[str]): car rental company's name, default is None
+        - location (Optional[str])
+        - name (Optional[str])
 
         Returns:
-        - list[dict]: list of car rental information
+        - list[dict]: car rental catalog rows
         """
         conn = connect(db)
         cursor = conn.cursor()
@@ -37,99 +38,166 @@ def register_car_tools(mcp: FastMCP):
 
         cursor.execute(query, params)
         results = cursor.fetchall()
-
+        column_names = [column[0] for column in cursor.description]
         conn.close()
 
-        return [
-            dict(zip([column[0] for column in cursor.description], row)) for row in results
-        ]
+        return [dict(zip(column_names, row)) for row in results]
 
-
-    @mcp.tool(name=f"{GROUP_NAME}_book")
-    def book_car_rental(rental_id: int) -> str:
+    @mcp.tool(name=f"{GROUP_NAME}_fetch")
+    def fetch_user_car_reservations(user_id: str) -> list[dict]:
         """
-        Book car rental service based on id
+        List car rental reservations for a user.
 
         Parameters:
-        - rental_id (int): id of car rental to book
-
-        Returns:
-        - str: whether the car rental is successfully booked
+        - user_id (str): conversation user id
         """
+        if not user_id:
+            raise ValueError("user_id is required")
+
         conn = connect(db)
         cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                r.id AS reservation_id,
+                r.user_id,
+                r.rental_id,
+                r.start_date,
+                r.end_date,
+                r.status,
+                c.name,
+                c.location,
+                c.price_tier
+            FROM car_reservations r
+            JOIN car_rentals c ON c.id = r.rental_id
+            WHERE r.user_id = ? AND r.status = 'booked'
+            """,
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+        column_names = [column[0] for column in cursor.description]
+        conn.close()
+        return [dict(zip(column_names, row)) for row in rows]
 
-        cursor.execute("UPDATE car_rentals SET booked = 1 WHERE id = ?", (rental_id,))
+    @mcp.tool(name=f"{GROUP_NAME}_book")
+    def book_car_rental(
+        user_id: str,
+        rental_id: int,
+        start_date: datetime | date | None = None,
+        end_date: datetime | date | None = None,
+    ) -> str:
+        """
+        Create a car rental reservation for a user.
+
+        Parameters:
+        - user_id (str)
+        - rental_id (int): catalog id from car_search
+        - start_date / end_date: optional rental period
+        """
+        if not user_id:
+            raise ValueError("user_id is required")
+
+        conn = connect(db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM car_rentals WHERE id = ?", (rental_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return f"Cannot find car rental {rental_id}"
+
+        cursor.execute(
+            """
+            INSERT INTO car_reservations
+                (user_id, rental_id, start_date, end_date, status)
+            VALUES (?, ?, ?, ?, 'booked')
+            """,
+            (user_id, rental_id, start_date, end_date),
+        )
+        reservation_id = cursor.lastrowid
         conn.commit()
-
-        if cursor.rowcount > 0:
-            conn.close()
-            return f"Car rental {rental_id} is successfully booked"
-        else:
-            conn.close()
-            return f"Car not find car rental {rental_id}"
-
+        conn.close()
+        return (
+            f"Car reservation created successfully. "
+            f"reservation_id={reservation_id}, rental_id={rental_id}, user_id={user_id}."
+        )
 
     @mcp.tool(name=f"{GROUP_NAME}_update")
     def update_car_rental(
-            rental_id: int,
-            start_date: datetime|date|None = None,
-            end_date: datetime|date|None = None,
+        reservation_id: int,
+        user_id: str,
+        start_date: datetime | date | None = None,
+        end_date: datetime | date | None = None,
     ) -> str:
         """
-        Update the car rental's start date and end date based on id.
+        Update dates on an existing car reservation.
 
         Parameters:
-        - rental_id (int): id of the car rental to update
-        - start_date (Optional[Union[datetime, date]]): start date of the car rental, default is None
-        - end_date (Optional[Union[datetime, date]]): end date of the car rental, default is None
-
-        Returns:
-            str: a string to indicate whether the update is successful
+        - reservation_id (int): booking id
+        - user_id (str)
+        - start_date / end_date: optional new dates
         """
+        if not user_id:
+            raise ValueError("user_id is required")
+
         conn = connect(db)
         cursor = conn.cursor()
-
-        if start_date:
-            cursor.execute(
-                "UPDATE car_rentals SET start_date = ? WHERE id = ?",
-                (start_date, rental_id),
+        cursor.execute(
+            """
+            SELECT id FROM car_reservations
+            WHERE id = ? AND user_id = ? AND status = 'booked'
+            """,
+            (reservation_id, user_id),
+        )
+        if not cursor.fetchone():
+            conn.close()
+            return (
+                f"Cannot find active car reservation {reservation_id} "
+                f"for user {user_id}."
             )
-        if end_date:
+
+        if start_date is not None:
             cursor.execute(
-                "UPDATE car_rentals SET end_date = ? WHERE id = ?", (end_date, rental_id)
+                "UPDATE car_reservations SET start_date = ? WHERE id = ?",
+                (start_date, reservation_id),
+            )
+        if end_date is not None:
+            cursor.execute(
+                "UPDATE car_reservations SET end_date = ? WHERE id = ?",
+                (end_date, reservation_id),
             )
 
         conn.commit()
-
-        if cursor.rowcount > 0:
-            conn.close()
-            return f"Car rental {rental_id} updated successfully."
-        else:
-            conn.close()
-            return f"No car rental found with ID {rental_id}."
-
+        conn.close()
+        return f"Car reservation {reservation_id} updated successfully."
 
     @mcp.tool(name=f"{GROUP_NAME}_cancel")
-    def cancel_car_rental(rental_id: int) -> str:
+    def cancel_car_rental(reservation_id: int, user_id: str) -> str:
         """
-        Cancel car rental service based on ID.
+        Cancel a car reservation owned by the user.
 
         Parameters:
-        - rental_id (int): id of the car rental to cancel
-
-        Returns:
-        - str: a string to indicate if the car rental is canceled successfully.
+        - reservation_id (int)
+        - user_id (str)
         """
+        if not user_id:
+            raise ValueError("user_id is required")
+
         conn = connect(db)
         cursor = conn.cursor()
-
-        cursor.execute("UPDATE car_rentals SET booked = 0 WHERE id = ?", (rental_id,))
+        cursor.execute(
+            """
+            UPDATE car_reservations
+            SET status = 'cancelled'
+            WHERE id = ? AND user_id = ? AND status = 'booked'
+            """,
+            (reservation_id, user_id),
+        )
         conn.commit()
+        updated = cursor.rowcount
+        conn.close()
 
-        if cursor.rowcount > 0:
-            conn.close()
-            return f"Car rental {rental_id} is cancelled successfully"
-        else:
-            conn.close()
-            return f"Can not find car rental {rental_id}"
+        if updated > 0:
+            return f"Car reservation {reservation_id} cancelled successfully."
+        return (
+            f"Cannot find active car reservation {reservation_id} "
+            f"for user {user_id}."
+        )

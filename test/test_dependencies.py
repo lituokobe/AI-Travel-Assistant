@@ -27,7 +27,7 @@ def test_resolve_user_context_defaults():
     ctx = resolve_user_context(None, None, None)
     assert ctx.user_id
     assert ctx.username
-    assert ctx.passenger_id
+    assert ctx.passenger_id == ctx.user_id
 
 
 def test_resolve_user_context_headers():
@@ -35,3 +35,10 @@ def test_resolve_user_context_headers():
     assert ctx.user_id == "uid"
     assert ctx.username == "Name"
     assert ctx.passenger_id == "pid"
+
+
+def test_resolve_user_context_passenger_defaults_to_user_id():
+    ctx = resolve_user_context("3442 587242", "Luis", None)
+    assert ctx.user_id == "3442 587242"
+    assert ctx.username == "Luis"
+    assert ctx.passenger_id == "3442 587242"

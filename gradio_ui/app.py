@@ -219,7 +219,10 @@ def create_app() -> gr.Blocks:
             with gr.Row():
                 user_id = gr.Textbox(label="User ID", value=DEFAULT_USER_ID)
                 username = gr.Textbox(label="Username", value=DEFAULT_USERNAME)
-                passenger_id = gr.Textbox(label="Passenger ID", value=DEFAULT_PASSENGER_ID)
+                passenger_id = gr.Textbox(
+                    label="Passenger ID (= User ID for flights)",
+                    value=DEFAULT_PASSENGER_ID,
+                )
 
         with gr.Accordion("Resume Interrupt (HITL)", open=False):
             gr.Markdown(

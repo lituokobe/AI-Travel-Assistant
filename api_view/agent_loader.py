@@ -130,7 +130,11 @@ def create_config(
     *,
     passenger_id: str | None = None,
 ) -> RunnableConfig:
-    """Build LangGraph RunnableConfig for a conversation thread."""
+    """Build LangGraph RunnableConfig for a conversation thread.
+
+    thread_id is required for Redis checkpointer inspection/resume.
+    passenger_id is a flights alias of user_id (same string).
+    """
     return {
         "configurable": {
             "thread_id": thread_id,

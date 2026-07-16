@@ -35,9 +35,9 @@ def sample_user_context():
     from api_view.models.requests import UserContext
 
     return UserContext(
-        user_id="test-user",
-        username="Test User",
-        passenger_id="3442 587679",
+        user_id="3442 587242",
+        username="Luis",
+        passenger_id="3442 587242",
     )
 
 

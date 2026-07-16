@@ -20,8 +20,10 @@ def resolve_user_context(
     x_username: str | None = Header(None, alias="X-Username"),
     x_passenger_id: str | None = Header(None, alias="X-Passenger-Id"),
 ) -> UserContext:
+    user_id = x_user_id or DEFAULT_USER_ID
+    # passenger_id is a flights-DB alias of user_id; header is optional override
     return UserContext(
-        user_id=x_user_id or DEFAULT_USER_ID,
+        user_id=user_id,
         username=x_username or DEFAULT_USERNAME,
-        passenger_id=x_passenger_id or DEFAULT_PASSENGER_ID,
+        passenger_id=x_passenger_id or user_id,
     )

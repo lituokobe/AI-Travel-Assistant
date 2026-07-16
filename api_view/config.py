@@ -16,9 +16,10 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "mongodb_db_travel_assistant")
 SESSIONS_COLLECTION = os.getenv("API_SESSIONS_COLLECTION", "api_sessions")
 
-DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "user-001")
-DEFAULT_USERNAME = os.getenv("DEFAULT_USERNAME", "Demo User")
-DEFAULT_PASSENGER_ID = os.getenv("DEFAULT_PASSENGER_ID", "3442 587679")
+DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "3442 587242")
+DEFAULT_USERNAME = os.getenv("DEFAULT_USERNAME", "Luis")
+# Compat alias: flight MCP passenger_id is the same string as user_id
+DEFAULT_PASSENGER_ID = os.getenv("DEFAULT_PASSENGER_ID", DEFAULT_USER_ID)
 
 GRADIO_HOST = os.getenv("GRADIO_HOST", "0.0.0.0")
 GRADIO_PORT = int(os.getenv("GRADIO_PORT", "7860"))

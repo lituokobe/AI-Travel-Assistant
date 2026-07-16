@@ -81,10 +81,10 @@ async def load_mcp_tools(
     Returns:
         Tuple of (all_tools, flights_tools, car_tools, hotels_tools, activity_tools)
         - all_tools: full list of MCP tools
-        - flights_tools: search, book, modify, cancel flights
-        - car_tools: search, book, modify, cancel car rentals
-        - hotels_tools: search, book, modify, cancel hotel bookings
-        - activity_tools: search, book, modify, cancel travel activities
+        - flights_tools: search, fetch, book, rebook, cancel flights
+        - car_tools: search, fetch, book, update, cancel car rentals
+        - hotels_tools: search, fetch, book, update, cancel hotel bookings
+        - activity_tools: search, fetch, book, update, cancel travel activities
     """
     if server_config is None:
         server_config = MCP_SERVER_CONFIG

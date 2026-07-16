@@ -98,9 +98,7 @@ def resolve_subagent_tools(
 
     Matching rules:
     - Each string in the YAML 'tools' list must EXACTLY match the .name attribute of
-      an available tool. This is stricter than the previous substring match and avoids
-      accidental cross-matches between similarly named tools (e.g. a 'car_' pattern
-      silently matching a 'rental_car_*' tool).
+      an available tool.
     - Tools listed in COMMON_SUBAGENT_TOOLS (e.g. request_travel_info) are appended
       automatically to every sub-agent and do not need to be declared in YAML.
 

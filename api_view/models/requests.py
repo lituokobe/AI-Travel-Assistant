@@ -14,7 +14,10 @@ class UserContext(BaseModel):
     username: str = Field(..., description="Display name")
     passenger_id: str | None = Field(
         None,
-        description="Passenger ID for flight MCP tools (injected into configurable)",
+        description=(
+            "Optional flights alias of user_id. If omitted, API uses user_id. "
+            "Flight MCP tools receive this as passenger_id."
+        ),
     )
 
 
