@@ -62,5 +62,6 @@ The sandbox is hosted from a cloud sandbox server with opensandbox by Alibaba.
 - On each DB sync, empty reservation tables are ensured: `hotel_reservations`, `car_reservations`, `activity_reservations`. Catalog tables no longer use a global `booked` flag.
 - Flights remain passenger-owned via `tickets.passenger_id`.
 - Demo/default user: `user_id=3442 587242`, `username=Luis` (has an existing flight ticket in the seed data).
+- LangGraph Store namespaces disallow spaces, so memories use a sanitized id (`3442_587242`) via `sanitize_store_user_id`; flight tools still use the original `user_id` as `passenger_id`.
 - The short-term memory is stored in Redis (by `thread_id`).
 - The long-term memory is stored in MongoDB.

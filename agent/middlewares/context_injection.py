@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
+from agent.config import sanitize_store_user_id
 from agent.logger import logger
 
 
@@ -43,19 +44,23 @@ class ContextInjectionMiddleware(AgentMiddleware):
             )
             return None
         username = getattr(ctx, "username", None) or user_id
+        memory_user_id = sanitize_store_user_id(user_id)
+        preferences_path = f"/memories/{memory_user_id}/preferences.md"
 
         logger.info(
             f"ContextInjectionMiddleware: injecting user context "
-            f"user_id={user_id}, username={username}"
+            f"user_id={user_id}, username={username}, memory_user_id={memory_user_id}"
         )
 
         notice = (
             f"[System Context]\n"
             f"Current user_id: {user_id}\n"
             f"Current username: {username}\n"
-            f"User preferences file: /memories/{user_id}/preferences.md\n"
+            f"User preferences file: {preferences_path}\n"
             f"\nPlease first use read_file to read the preferences file above "
             f"to understand the user's preferences."
+            f"\n(Use the exact preferences path above. Do not put spaces in memory paths; "
+            f"the store-safe id for memories is `{memory_user_id}`.)"
             f"\n(recent_destinations and recent_queries are maintained automatically "
             f"by the system; you do not need to update them manually.)"
             f"\nWhen delegating travel tasks, always include User ID: {user_id}."

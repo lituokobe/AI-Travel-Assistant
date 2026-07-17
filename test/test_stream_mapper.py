@@ -10,13 +10,64 @@ from api_view.services.stream_mapper import (
     _extract_reasoning,
     _extract_visible_text,
     _format_tool_args,
+    _is_internal_llm_run,
+    _normalize_tool_call,
+    _strip_trailing_memory_json,
     _thinking_for_tool,
 )
+from agent.middlewares.memory_update import MEMORY_UPDATE_TAG
 
 
 def test_format_tool_args_dict():
     assert "SFO" in _format_tool_args({"from": "SFO"})
 
+
+def test_normalize_tool_call_none_id_uses_index():
+    tc_id, name, args = _normalize_tool_call(
+        {"id": None, "name": "read_file", "args": {}, "index": 0}
+    )
+    assert tc_id == "idx-0"
+    assert name == "read_file"
+    assert isinstance(tc_id, str)
+
+
+def test_normalize_tool_call_missing_id_and_index_falls_back():
+    tc_id, name, _args = _normalize_tool_call({"id": None, "name": "", "args": {}})
+    assert tc_id == "anon-tool"
+    assert name == ""
+
+
+def test_normalize_tool_call_preserves_real_id():
+    tc_id, name, args = _normalize_tool_call(
+        {"id": "call-abc", "name": "flights_fetch", "args": {"passenger_id": "x"}}
+    )
+    assert tc_id == "call-abc"
+    assert name == "flights_fetch"
+    assert args["passenger_id"] == "x"
+
+
+def test_stream_tool_start_event_rejects_none_id_fixed_by_normalize():
+    from agent.schema import StreamToolStartEvent
+
+    tc_id, name, _ = _normalize_tool_call(
+        {"id": None, "name": "read_file", "index": 1}
+    )
+    event = StreamToolStartEvent(tool_call_id=tc_id, tool_name=name, source="main")
+    assert event.tool_call_id == "idx-1"
+
+
+def test_strip_trailing_memory_json():
+    text = (
+        "Would you like to book the Hilton?\n"
+        '{"destinations": ["Basel"], "query": "Looking for a luxury hotel"}'
+    )
+    assert _strip_trailing_memory_json(text) == "Would you like to book the Hilton?"
+
+
+def test_is_internal_llm_run_detects_memory_tag():
+    assert _is_internal_llm_run({"tags": [MEMORY_UPDATE_TAG]})
+    assert not _is_internal_llm_run({"tags": ["other"]})
+    assert _is_internal_llm_run({"run_name": "memory_entity_extract"})
 
 def test_thinking_for_task_delegation():
     event = _thinking_for_tool("task", {"description": "search flights"}, "main")

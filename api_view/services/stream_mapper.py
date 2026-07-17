@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
@@ -22,6 +23,14 @@ from api_view.models.events import (
     StreamThinkingEvent,
 )
 from agent.logger import logger
+from agent.middlewares.memory_update import MEMORY_UPDATE_TAG
+
+# Trailing JSON that MemoryUpdateMiddleware asks the LLM to emit
+# (leaks into astream when the internal call is not filtered).
+_MEMORY_JSON_TAIL = re.compile(
+    r'\s*\{\s*"destinations"\s*:\s*\[.*?\]\s*,\s*"query"\s*:\s*".*?"\s*\}\s*$',
+    re.DOTALL,
+)
 
 
 def _sse(event: Any) -> str:
@@ -50,6 +59,52 @@ def _format_tool_args(args: Any) -> str:
     if isinstance(args, str):
         return args
     return json.dumps(args, ensure_ascii=False)
+
+
+def _normalize_tool_call(tc: Any) -> tuple[str, str, Any]:
+    """Return (tool_call_id, tool_name, args) with a guaranteed non-empty string id.
+
+    Streaming chunks often set ``id=None`` while the key is still present, so
+    ``dict.get("id", "")`` incorrectly returns ``None`` and breaks Pydantic.
+    """
+    if isinstance(tc, dict):
+        tc_id = tc.get("id")
+        name = tc.get("name") or ""
+        args = tc.get("args", {})
+        index = tc.get("index")
+    else:
+        tc_id = getattr(tc, "id", None)
+        name = getattr(tc, "name", None) or ""
+        args = getattr(tc, "args", None) or {}
+        index = getattr(tc, "index", None)
+
+    if not tc_id and index is not None:
+        tc_id = f"idx-{index}"
+    if not tc_id:
+        tc_id = f"anon-{name or 'tool'}"
+    return str(tc_id), str(name), args
+
+
+def _is_internal_llm_run(metadata: dict[str, Any] | None) -> bool:
+    """True for middleware/internal LLM calls that must not appear in the UI."""
+    if not metadata:
+        return False
+    tags = metadata.get("tags") or []
+    if MEMORY_UPDATE_TAG in tags:
+        return True
+    run_name = (
+        metadata.get("langsmith_run_name")
+        or metadata.get("run_name")
+        or ""
+    )
+    if isinstance(run_name, str) and "memory_entity_extract" in run_name:
+        return True
+    return False
+
+
+def _strip_trailing_memory_json(text: str) -> str:
+    """Remove a trailing destinations/query JSON object if it leaked into chat text."""
+    return _MEMORY_JSON_TAIL.sub("", text).rstrip()
 
 
 def _extract_reasoning(msg_chunk: AIMessage | AIMessageChunk) -> str:
@@ -183,6 +238,18 @@ async def map_agent_stream(
             logger.info("[reasoning|%s] %s", src, "".join(reasoning_buf))
             reasoning_buf.clear()
 
+    def _emit_buffered_tool_args(tc_id: str, source: str) -> list[str]:
+        """Emit one consolidated tool_args SSE for a buffered call (if any)."""
+        info = pending_tool_calls.get(tc_id)
+        if not info or info.get("args_emitted"):
+            return []
+        args_str = (info.get("args") or "").strip()
+        if not args_str:
+            return []
+        info["args_emitted"] = True
+        logger.info("[tool_args|%s] %s", source, args_str[:800])
+        return [_sse(StreamToolArgsEvent(args=args_str))]
+
     try:
         async for chunk in agent.astream(
             input_data,
@@ -194,14 +261,18 @@ async def map_agent_stream(
             if isinstance(chunk, tuple) and len(chunk) == 3:
                 namespace, mode, data = chunk
                 source = ".".join(namespace) if namespace else "main"
+                is_root_graph = not namespace
             elif isinstance(chunk, tuple) and len(chunk) == 2:
                 mode, data = chunk
                 source = "main"
+                is_root_graph = True
             else:
                 continue
 
             if mode == "messages":
                 msg_chunk, metadata = data
+                if _is_internal_llm_run(metadata if isinstance(metadata, dict) else None):
+                    continue
                 source = _source_from_metadata(metadata) or source
 
                 if isinstance(msg_chunk, (AIMessageChunk, AIMessage)):
@@ -219,70 +290,101 @@ async def map_agent_stream(
                         )
 
                     text = _extract_visible_text(msg_chunk)
-                    if text:
+                    # Only root-graph assistant text goes to the chat bubble.
+                    # Subgraph (sub-agent) narration stays out of the user reply;
+                    # tool_result / thinking events still cover the under-the-hood story.
+                    if text and is_root_graph:
                         full_response += text
                         yield _sse(StreamTokenEvent(content=text, source=source))
 
                     if hasattr(msg_chunk, "tool_call_chunks") and msg_chunk.tool_call_chunks:
                         for tc in msg_chunk.tool_call_chunks:
-                            tc_id = tc.get("id") or tc.get("index", "")
-                            name = tc.get("name", "")
-                            if name:
+                            tc_id, name, chunk_args = _normalize_tool_call(tc)
+                            if name and tc_id not in pending_tool_calls:
                                 _flush_reasoning(source)
-                                pending_tool_calls[str(tc_id)] = {"name": name, "args": ""}
+                                pending_tool_calls[tc_id] = {
+                                    "name": name,
+                                    "args": "",
+                                    "args_emitted": False,
+                                }
                                 logger.info("[tool_start|%s] %s", source, name)
                                 yield _sse(
                                     StreamToolStartEvent(
-                                        tool_call_id=str(tc_id),
+                                        tool_call_id=tc_id,
                                         tool_name=name,
                                         source=source,
                                     )
                                 )
-                                thinking = _thinking_for_tool(name, tc.get("args", {}), source)
-                                yield _sse(thinking)
-                            if tc.get("args"):
-                                args_str = _format_tool_args(tc["args"])
-                                key = str(tc_id)
-                                if key in pending_tool_calls:
-                                    pending_tool_calls[key]["args"] += args_str
-                                logger.info("[tool_args] %s", args_str)
-                                yield _sse(StreamToolArgsEvent(args=args_str))
+                                yield _sse(
+                                    StreamThinkingEvent(
+                                        category="tool",
+                                        content=f"Calling tool: {name}",
+                                        source=source,
+                                        metadata={"tool": name},
+                                    )
+                                )
+                            # Buffer arg fragments; emit once when the call completes.
+                            if chunk_args and tc_id in pending_tool_calls:
+                                pending_tool_calls[tc_id]["args"] += _format_tool_args(
+                                    chunk_args
+                                )
 
                     if isinstance(msg_chunk, AIMessage) and msg_chunk.tool_calls:
                         for tc in msg_chunk.tool_calls:
-                            tc_id = tc.get("id", "")
-                            name = tc.get("name", "")
-                            args = tc.get("args", {})
-                            _flush_reasoning(source)
-                            logger.info("[tool_start|%s] %s", source, name)
-                            yield _sse(
-                                StreamToolStartEvent(
-                                    tool_call_id=tc_id,
-                                    tool_name=name,
-                                    source=source,
-                                )
-                            )
-                            yield _sse(_thinking_for_tool(name, args, source))
+                            tc_id, name, args = _normalize_tool_call(tc)
+                            if not name:
+                                continue
                             args_str = _format_tool_args(args)
-                            logger.info("[tool_args] %s", args_str)
-                            yield _sse(StreamToolArgsEvent(args=args_str))
+                            if tc_id not in pending_tool_calls:
+                                _flush_reasoning(source)
+                                pending_tool_calls[tc_id] = {
+                                    "name": name,
+                                    "args": args_str,
+                                    "args_emitted": False,
+                                }
+                                logger.info("[tool_start|%s] %s", source, name)
+                                yield _sse(
+                                    StreamToolStartEvent(
+                                        tool_call_id=tc_id,
+                                        tool_name=name,
+                                        source=source,
+                                    )
+                                )
+                                yield _sse(_thinking_for_tool(name, args, source))
+                            elif args_str:
+                                pending_tool_calls[tc_id]["args"] = args_str
+                            for event in _emit_buffered_tool_args(tc_id, source):
+                                yield event
 
                 elif isinstance(msg_chunk, ToolMessage):
                     _flush_reasoning(source)
+                    tc_id = getattr(msg_chunk, "tool_call_id", None) or ""
+                    if tc_id:
+                        for event in _emit_buffered_tool_args(str(tc_id), source):
+                            yield event
+                    else:
+                        # Fallback: flush oldest un-emitted buffered args
+                        for pending_id, info in pending_tool_calls.items():
+                            if not info.get("args_emitted") and info.get("args"):
+                                for event in _emit_buffered_tool_args(pending_id, source):
+                                    yield event
+                                break
+
                     result_text = (
                         msg_chunk.content
                         if isinstance(msg_chunk.content, str)
                         else json.dumps(msg_chunk.content, ensure_ascii=False)
                     )
+                    tool_name = msg_chunk.name or "tool"
                     logger.info(
                         "[tool_result|%s] %s: %s",
                         source,
-                        msg_chunk.name or "tool",
+                        tool_name,
                         result_text[:500],
                     )
                     yield _sse(
                         StreamToolResultEvent(
-                            tool_name=msg_chunk.name or "tool",
+                            tool_name=tool_name,
                             result=result_text[:4000],
                             source=source,
                         )
@@ -290,7 +392,7 @@ async def map_agent_stream(
                     yield _sse(
                         StreamThinkingEvent(
                             category="tool",
-                            content=f"Tool completed: {msg_chunk.name or 'tool'}",
+                            content=f"Tool completed: {tool_name}",
                             source=source,
                             metadata={"result_preview": result_text[:500]},
                         )
@@ -319,6 +421,11 @@ async def map_agent_stream(
                             )
                         )
 
+        # Flush any tool args that never got a ToolMessage (edge cases)
+        for pending_id in list(pending_tool_calls):
+            for event in _emit_buffered_tool_args(pending_id, "main"):
+                yield event
+
         state = await agent.aget_state(config)
         if state and state.interrupts:
             for intr in state.interrupts:
@@ -334,6 +441,7 @@ async def map_agent_stream(
                     yield _sse(event)
 
         _flush_reasoning("main")
+        full_response = _strip_trailing_memory_json(full_response)
         logger.info("[done|%s] %s", thread_id, full_response)
         yield _sse(StreamDoneEvent(thread_id=thread_id, content=full_response))
 

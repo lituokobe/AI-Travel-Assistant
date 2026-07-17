@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import httpx
 import pymongo
+import re
 
 from langchain_openai import ChatOpenAI
 import os
@@ -127,6 +128,21 @@ SKILLS_STORE_NAMESPACE = ("skills",)
 # name here would risk cross-contamination; this sentinel makes leaked data
 # easy to identify and clean up.
 ANONYMOUS_USER_ID = "__anonymous__"
+
+# LangGraph Store namespaces only allow: alphanumeric, hyphen, underscore,
+# dot, @, +, colon, tilde. Airline passenger ids like "3442 587242" are fine
+# as TravelContext.user_id / flight passenger_id, but MUST be sanitized before
+# use as a Store namespace or /memories/{id}/ path component.
+_STORE_NAMESPACE_DISALLOWED = re.compile(r"[^0-9A-Za-z\-_\.@+:~]+")
+
+
+def sanitize_store_user_id(user_id: str | None) -> str:
+    """Map a user_id to a LangGraph-Store-safe namespace / memory path segment."""
+    if not user_id:
+        return ANONYMOUS_USER_ID
+    sanitized = _STORE_NAMESPACE_DISALLOWED.sub("_", user_id).strip("_")
+    return sanitized or ANONYMOUS_USER_ID
+
 
 SCOPE_MAP = {
     "main": "main",

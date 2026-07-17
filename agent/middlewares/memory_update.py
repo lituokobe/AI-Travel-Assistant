@@ -21,6 +21,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
 from agent.logger import logger
+from agent.config import sanitize_store_user_id
+
+# Tag applied to the internal entity-extraction LLM call so parent astream
+# (stream_mode="messages") can ignore those tokens and not show them in chat.
+MEMORY_UPDATE_TAG = "memory_update_internal"
 
 # Travel-related keywords that trigger automatic memory updates
 _TRIGGER_KEYWORDS = [
@@ -129,7 +134,13 @@ Return ONLY a JSON object, no other text:
 {{"destinations": ["PlaceA", "PlaceB"], "query": "brief summary"}}"""
 
     try:
-        response = await model.ainvoke(prompt)
+        response = await model.ainvoke(
+            prompt,
+            config={
+                "tags": [MEMORY_UPDATE_TAG],
+                "run_name": "memory_entity_extract",
+            },
+        )
 
         # Extract JSON from the reply
         text = response.content
@@ -195,6 +206,7 @@ class MemoryUpdateMiddleware(AgentMiddleware):
             user_id = getattr(ctx, "user_id", None)
             if not user_id:
                 return None
+            store_user_id = sanitize_store_user_id(user_id)
 
             # 2. Get message list
             messages: list[BaseMessage] = state.get("messages", [])
@@ -218,7 +230,7 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                 return None
 
             logger.info(
-                f"MemoryUpdateMiddleware: user={user_id}, "
+                f"MemoryUpdateMiddleware: user={user_id} (store={store_user_id}), "
                 f"destinations={destinations}, query={query[:50]}"
             )
 
@@ -228,8 +240,8 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                 logger.warning("MemoryUpdateMiddleware: runtime.store is unavailable")
                 return None
 
-            namespace = (user_id,)
-            key = f"/{user_id}/preferences.md"
+            namespace = (store_user_id,)
+            key = f"/{store_user_id}/preferences.md"
 
             try:
                 item = await store.aget(namespace, key)

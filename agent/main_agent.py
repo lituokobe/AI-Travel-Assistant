@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent.backends.sandbox_setup import setup_sandbox
 from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL, \
-    MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER, ANONYMOUS_USER_ID
+    MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER, ANONYMOUS_USER_ID, sanitize_store_user_id
 from agent.logger import logger
 from agent.memory.prompts import system_prompt
 from agent.middleware_config import create_sub_agent_middleware
@@ -80,12 +80,21 @@ async def create_main_agent(
     logger.info("Phase 3/10: Configure CompositeBackend (memories + persisted-skills → Store)...")
     logger.info(f"🔍 DEBUG: STORE type={type(STORE)}, sandbox_id={sandbox_id}")
 
+    def _memories_namespace(rt):
+        # deepagents 0.7+: rt is Runtime with .context; older path used rt.runtime.context
+        ctx = getattr(rt, "context", None)
+        if ctx is None:
+            nested = getattr(rt, "runtime", None)
+            ctx = getattr(nested, "context", None) if nested is not None else None
+        raw_user_id = getattr(ctx, "user_id", ANONYMOUS_USER_ID) if ctx is not None else ANONYMOUS_USER_ID
+        return (sanitize_store_user_id(raw_user_id),)
+
     backend = lambda rt: CompositeBackend(
         default=sandbox_backend,
         routes={
             "/memories/": StoreBackend(
                 runtime=rt,
-                namespace=lambda rt: (getattr(rt.runtime.context, 'user_id', ANONYMOUS_USER_ID),),
+                namespace=_memories_namespace,
             ),
             "/persisted-skills/": StoreBackend(
                 runtime=rt,

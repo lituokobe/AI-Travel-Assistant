@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import gradio as gr
@@ -25,7 +26,11 @@ def _format_thinking_event(event: dict[str, Any]) -> str:
         cat = event.get("category", "status")
         source = event.get("source", "main")
         prefix = "💭" if cat == "reasoning" else "🔧"
-        return f"{prefix} [{cat.upper()}|{source}] {event.get('content', '')}"
+        content = event.get("content", "")
+        # For delegation, keep the full description readable (truncate very long ones)
+        if cat == "delegation" and len(content) > 1200:
+            content = content[:1200] + "…"
+        return f"{prefix} [{cat.upper()}|{source}] {content}"
     if etype == "reasoning":
         source = event.get("source", "main")
         return f"💭 [REASONING|{source}] {event.get('content', '')}"
@@ -34,17 +39,35 @@ def _format_thinking_event(event: dict[str, Any]) -> str:
         lines = [f"  • [{t.get('status', '?')}] {t.get('content', '')}" for t in todos]
         return "[PLAN]\n" + "\n".join(lines)
     if etype == "tool_start":
-        return f"[TOOL] Starting: {event.get('tool_name')} (source={event.get('source', 'main')})"
+        return f"[TOOL] {event.get('tool_name')} (source={event.get('source', 'main')})"
     if etype == "tool_args":
-        return f"[TOOL ARGS] {event.get('args', '')[:500]}"
+        args = event.get("args", "")
+        # Server now sends one consolidated block; still collapse whitespace for display
+        compact = " ".join(str(args).split())
+        if len(compact) > 800:
+            compact = compact[:800] + "…"
+        return f"[TOOL ARGS] {compact}"
     if etype == "tool_result":
-        preview = event.get("result", "")[:300]
-        return f"[TOOL RESULT] {event.get('tool_name')}: {preview}..."
+        preview = event.get("result", "")
+        preview = " ".join(str(preview).split())
+        if len(preview) > 400:
+            preview = preview[:400] + "…"
+        return f"[TOOL RESULT] {event.get('tool_name')}: {preview}"
     if etype == "interrupt":
         return f"[INTERRUPT] {event.get('interrupt_type')}: {json.dumps(event.get('payload', {}), ensure_ascii=False)[:500]}"
     if etype == "error":
         return f"[ERROR] {event.get('message', '')}"
     return ""
+
+
+_MEMORY_JSON_TAIL = re.compile(
+    r'\s*\{\s*"destinations"\s*:\s*\[.*?\]\s*,\s*"query"\s*:\s*".*?"\s*\}\s*$',
+    re.DOTALL,
+)
+
+
+def _clean_assistant_text(text: str) -> str:
+    return _MEMORY_JSON_TAIL.sub("", text or "").rstrip()
 
 
 def _process_stream_events(
@@ -79,6 +102,9 @@ def _process_stream_events(
                 assistant_text += event.get("content", "")
             elif etype == "done":
                 _session["thread_id"] = event.get("thread_id", thread_id)
+                done_content = event.get("content") or ""
+                if done_content and not assistant_text.strip():
+                    assistant_text = done_content
             elif etype == "interrupt":
                 _session["pending_interrupt"] = event
                 thinking_lines.append(
@@ -89,6 +115,7 @@ def _process_stream_events(
         thinking_lines.append(f"[ERROR] {exc}")
         assistant_text = f"Error: {exc}"
 
+    assistant_text = _clean_assistant_text(assistant_text)
     if assistant_text:
         history = history + [{"role": "assistant", "content": assistant_text}]
 
