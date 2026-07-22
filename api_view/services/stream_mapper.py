@@ -55,9 +55,174 @@ def _source_from_metadata(metadata: dict[str, Any] | None) -> str:
     return "main"
 
 
+# Domain MCP tools are owned by child agents; LangGraph subgraph namespaces are
+# often opaque (e.g. ``tools:<uuid>``), so we also infer the agent from the tool.
+_TOOL_PREFIX_TO_AGENT: tuple[tuple[str, str], ...] = (
+    ("hotels_", "hotels-agent"),
+    ("flights_", "flights-agent"),
+    ("car_", "car-agent"),
+    ("activity_", "activity-agent"),
+)
+
+_SUBAGENT_TYPE_RE = re.compile(r'"subagent_type"\s*:\s*"([^"]+)"')
+_KNOWN_SUBAGENTS = frozenset(
+    {"hotels-agent", "flights-agent", "car-agent", "activity-agent"}
+)
+
+
+def _agent_from_tool_name(tool_name: str | None) -> str | None:
+    """Map a domain tool (e.g. hotels_search) to its owning child agent."""
+    if not tool_name:
+        return None
+    for prefix, agent in _TOOL_PREFIX_TO_AGENT:
+        if tool_name.startswith(prefix):
+            return agent
+    return None
+
+
+def _agent_from_skills_path(text: str | None) -> str | None:
+    """Infer child agent from filesystem skill paths like ``/skills/hotels/``."""
+    if not text:
+        return None
+    for name in ("hotels", "flights", "car", "activity"):
+        if f"/skills/{name}/" in text or f"/skills/{name}'" in text:
+            return f"{name}-agent"
+    return None
+
+
+def _parse_subagent_type(args: Any) -> str | None:
+    """Extract ``subagent_type`` from task-tool args (dict or partial JSON)."""
+    if isinstance(args, dict):
+        value = str(args.get("subagent_type") or "").strip()
+        return value or None
+    if not args:
+        return None
+    text = args if isinstance(args, str) else _format_tool_args(args)
+    match = _SUBAGENT_TYPE_RE.search(text)
+    if match:
+        return match.group(1).strip() or None
+    # Fallback: known agent id appears as a bare token in the args blob
+    for agent in _KNOWN_SUBAGENTS:
+        if agent in text:
+            return agent
+    return None
+
+
+def _resolve_agent_label(
+    namespace_source: str,
+    metadata: dict[str, Any] | None,
+    *,
+    tool_name: str | None = None,
+    active_subagent: str | None = None,
+    is_root_graph: bool = True,
+) -> str | None:
+    """Return a clean agent id (`main` / `*-agent`) suitable for handover UI.
+
+    DeepAgents streams child-agent work under opaque namespaces such as
+    ``tools:<uuid>`` / ``model:<uuid>``. Prefer explicit signals in this order:
+    tool-name domain map → langgraph node / checkpoint → active task subagent
+    → root ``main``.
+    """
+    inferred = _agent_from_tool_name(tool_name)
+    if inferred:
+        return inferred
+
+    if metadata:
+        node = metadata.get("langgraph_node", "") or ""
+        if isinstance(node, str) and (
+            node.endswith("-agent") or node.endswith("_subagent")
+        ):
+            return node
+        cp = metadata.get("checkpoint_ns", "") or ""
+        if isinstance(cp, str):
+            for part in re.split(r"[.:/|]", cp):
+                if part.endswith("-agent") or part.endswith("_subagent"):
+                    return part
+                if part in _KNOWN_SUBAGENTS:
+                    return part
+
+    ns = namespace_source or ""
+    for part in re.split(r"[.:/|]", ns):
+        if part.endswith("-agent") or part.endswith("_subagent") or part in _KNOWN_SUBAGENTS:
+            return part
+
+    if not is_root_graph and active_subagent:
+        return active_subagent
+
+    if not ns or ns == "main" or is_root_graph:
+        # Root-graph model/tools nodes still belong to the main agent
+        if is_root_graph and (
+            not ns
+            or ns == "main"
+            or ns.startswith("model")
+            or ns.startswith("tools")
+            or "Middleware" in ns
+        ):
+            return "main"
+        if not ns or ns == "main":
+            return "main"
+
+    if (
+        "Middleware" in ns
+        or ns.startswith("model")
+        or ns.startswith("tools")
+        or "after_agent" in ns
+        or "before_agent" in ns
+    ):
+        # Opaque subgraph node without a known domain tool yet
+        return active_subagent
+
+    return None
+
+
+def _display_agent_name(agent: str) -> str:
+    """Human-readable label for thinking-step handovers."""
+    if agent == "main":
+        return "main agent"
+    return agent
+
+
+def _agent_switch_event(agent: str) -> StreamThinkingEvent:
+    display = _display_agent_name(agent)
+    return StreamThinkingEvent(
+        category="status",
+        content=f"Current: {display}",
+        source=agent,
+        metadata={"kind": "agent_switch", "agent": agent},
+    )
+
+
+def _normalize_approval_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add a flat ``actions`` list for clients (tool name + args)."""
+    raw_requests = payload.get("action_requests") or []
+    actions: list[dict[str, Any]] = []
+    for req in raw_requests:
+        if isinstance(req, dict):
+            actions.append(
+                {
+                    "name": req.get("name") or req.get("tool") or "action",
+                    "args": req.get("args") or {},
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "name": getattr(req, "name", None) or "action",
+                    "args": getattr(req, "args", None) or {},
+                }
+            )
+    enriched = dict(payload)
+    enriched["actions"] = actions
+    return enriched
+
+
 def _format_tool_args(args: Any) -> str:
     if isinstance(args, str):
         return args
+    if isinstance(args, dict) and not args:
+        # Streaming often sends an empty dict chunk before real args arrive;
+        # do not turn that into a literal "{}" that blocks later content.
+        return ""
     return json.dumps(args, ensure_ascii=False)
 
 
@@ -155,14 +320,26 @@ def _extract_visible_text(msg_chunk: AIMessage | AIMessageChunk) -> str:
 
 def _thinking_for_tool(tool_name: str, args: Any, source: str) -> StreamThinkingEvent:
     if tool_name == "task":
+        subagent = ""
         desc = ""
         if isinstance(args, dict):
-            desc = args.get("description", args.get("subagent_type", ""))
+            subagent = str(args.get("subagent_type") or "").strip()
+            desc = str(args.get("description") or "").strip()
+        if subagent and desc:
+            content = f"Delegating to {subagent}: {desc[:200]}"
+        elif subagent:
+            content = f"Delegating to {subagent}"
+        else:
+            content = f"Delegating to sub-agent: {desc or json.dumps(args, ensure_ascii=False)}"
         return StreamThinkingEvent(
             category="delegation",
-            content=f"Delegating to sub-agent: {desc or json.dumps(args, ensure_ascii=False)}",
+            content=content,
             source=source,
-            metadata={"tool": tool_name, "args": args},
+            metadata={
+                "tool": tool_name,
+                "args": args,
+                "subagent_type": subagent or None,
+            },
         )
     if tool_name == "write_todos":
         return StreamThinkingEvent(
@@ -198,11 +375,15 @@ def _extract_interrupts(result: dict[str, Any], thread_id: str) -> list[StreamIn
             isinstance(value, dict) and "action_requests" in value
         ):
             payload = value.model_dump() if hasattr(value, "model_dump") else value
+            if isinstance(payload, dict):
+                payload = _normalize_approval_payload(payload)
+            else:
+                payload = {"raw": str(payload), "actions": []}
             events.append(
                 StreamInterruptEvent(
                     interrupt_id=interrupt_id,
                     interrupt_type="approval",
-                    payload=payload if isinstance(payload, dict) else {"raw": str(payload)},
+                    payload=payload,
                     thread_id=thread_id,
                 )
             )
@@ -232,11 +413,50 @@ async def map_agent_stream(
     # line so the reasoning reads as one block instead of hundreds of
     # tiny token-sized log entries.
     reasoning_buf: list[str] = []
+    last_agent: str | None = None
+    # Child agent currently running via the DeepAgents ``task`` tool.
+    # Subgraph stream namespaces are often ``tools:<uuid>``, so we keep this
+    # explicitly and also refine it from domain tool names.
+    active_subagent: str | None = None
 
     def _flush_reasoning(src: str) -> None:
         if reasoning_buf:
             logger.info("[reasoning|%s] %s", src, "".join(reasoning_buf))
             reasoning_buf.clear()
+
+    def _force_agent_switch(agent: str | None) -> list[str]:
+        nonlocal last_agent, active_subagent
+        if not agent or agent == last_agent:
+            return []
+        last_agent = agent
+        active_subagent = None if agent == "main" else agent
+        logger.info("[agent_switch] Current: %s", _display_agent_name(agent))
+        return [_sse(_agent_switch_event(agent))]
+
+    def _emit_agent_switch(
+        ns_source: str,
+        metadata: dict[str, Any] | None,
+        *,
+        tool_name: str | None = None,
+        is_root_graph: bool = True,
+    ) -> list[str]:
+        agent = _resolve_agent_label(
+            ns_source,
+            metadata,
+            tool_name=tool_name,
+            active_subagent=active_subagent,
+            is_root_graph=is_root_graph,
+        )
+        return _force_agent_switch(agent)
+
+    def _note_task_subagent(args: Any) -> list[str]:
+        """Record handover target when main delegates via ``task``."""
+        nonlocal active_subagent
+        sub = _parse_subagent_type(args)
+        if not sub:
+            return []
+        active_subagent = sub
+        return _force_agent_switch(sub)
 
     def _emit_buffered_tool_args(tc_id: str, source: str) -> list[str]:
         """Emit one consolidated tool_args SSE for a buffered call (if any)."""
@@ -244,11 +464,14 @@ async def map_agent_stream(
         if not info or info.get("args_emitted"):
             return []
         args_str = (info.get("args") or "").strip()
-        if not args_str:
+        if not args_str or args_str in ("{}", "null"):
             return []
         info["args_emitted"] = True
         logger.info("[tool_args|%s] %s", source, args_str[:800])
-        return [_sse(StreamToolArgsEvent(args=args_str))]
+        events = [_sse(StreamToolArgsEvent(args=args_str))]
+        if info.get("name") == "task":
+            events.extend(_note_task_subagent(args_str))
+        return events
 
     try:
         async for chunk in agent.astream(
@@ -271,20 +494,44 @@ async def map_agent_stream(
 
             if mode == "messages":
                 msg_chunk, metadata = data
-                if _is_internal_llm_run(metadata if isinstance(metadata, dict) else None):
+                meta_dict = metadata if isinstance(metadata, dict) else None
+                if _is_internal_llm_run(meta_dict):
                     continue
-                source = _source_from_metadata(metadata) or source
+
+                # Entering a subgraph without a resolved name yet still means
+                # a child agent is active if we already know it from ``task``.
+                for switch_sse in _emit_agent_switch(
+                    source,
+                    meta_dict,
+                    is_root_graph=is_root_graph,
+                ):
+                    yield switch_sse
+
+                display_source = (
+                    _resolve_agent_label(
+                        source,
+                        meta_dict,
+                        active_subagent=active_subagent,
+                        is_root_graph=is_root_graph,
+                    )
+                    or _source_from_metadata(meta_dict)
+                    or source
+                )
 
                 if isinstance(msg_chunk, (AIMessageChunk, AIMessage)):
                     reasoning = _extract_reasoning(msg_chunk)
                     if reasoning:
                         reasoning_buf.append(reasoning)
-                        yield _sse(StreamReasoningEvent(content=reasoning, source=source))
+                        yield _sse(
+                            StreamReasoningEvent(
+                                content=reasoning, source=display_source
+                            )
+                        )
                         yield _sse(
                             StreamThinkingEvent(
                                 category="reasoning",
                                 content=reasoning,
-                                source=source,
+                                source=display_source,
                                 metadata={"kind": "model_reasoning"},
                             )
                         )
@@ -295,31 +542,50 @@ async def map_agent_stream(
                     # tool_result / thinking events still cover the under-the-hood story.
                     if text and is_root_graph:
                         full_response += text
-                        yield _sse(StreamTokenEvent(content=text, source=source))
+                        yield _sse(
+                            StreamTokenEvent(content=text, source=display_source)
+                        )
 
                     if hasattr(msg_chunk, "tool_call_chunks") and msg_chunk.tool_call_chunks:
                         for tc in msg_chunk.tool_call_chunks:
                             tc_id, name, chunk_args = _normalize_tool_call(tc)
                             if name and tc_id not in pending_tool_calls:
-                                _flush_reasoning(source)
+                                _flush_reasoning(display_source)
+                                for switch_sse in _emit_agent_switch(
+                                    source,
+                                    meta_dict,
+                                    tool_name=name,
+                                    is_root_graph=is_root_graph,
+                                ):
+                                    yield switch_sse
+                                tool_source = (
+                                    _resolve_agent_label(
+                                        source,
+                                        meta_dict,
+                                        tool_name=name,
+                                        active_subagent=active_subagent,
+                                        is_root_graph=is_root_graph,
+                                    )
+                                    or display_source
+                                )
                                 pending_tool_calls[tc_id] = {
                                     "name": name,
                                     "args": "",
                                     "args_emitted": False,
                                 }
-                                logger.info("[tool_start|%s] %s", source, name)
+                                logger.info("[tool_start|%s] %s", tool_source, name)
                                 yield _sse(
                                     StreamToolStartEvent(
                                         tool_call_id=tc_id,
                                         tool_name=name,
-                                        source=source,
+                                        source=tool_source,
                                     )
                                 )
                                 yield _sse(
                                     StreamThinkingEvent(
                                         category="tool",
                                         content=f"Calling tool: {name}",
-                                        source=source,
+                                        source=tool_source,
                                         metadata={"tool": name},
                                     )
                                 )
@@ -328,6 +594,12 @@ async def map_agent_stream(
                                 pending_tool_calls[tc_id]["args"] += _format_tool_args(
                                     chunk_args
                                 )
+                                # Partial JSON may already contain subagent_type
+                                if pending_tool_calls[tc_id]["name"] == "task":
+                                    for switch_sse in _note_task_subagent(
+                                        pending_tool_calls[tc_id]["args"]
+                                    ):
+                                        yield switch_sse
 
                     if isinstance(msg_chunk, AIMessage) and msg_chunk.tool_calls:
                         for tc in msg_chunk.tool_calls:
@@ -335,38 +607,65 @@ async def map_agent_stream(
                             if not name:
                                 continue
                             args_str = _format_tool_args(args)
+                            for switch_sse in _emit_agent_switch(
+                                source,
+                                meta_dict,
+                                tool_name=name,
+                                is_root_graph=is_root_graph,
+                            ):
+                                yield switch_sse
+                            tool_source = (
+                                _resolve_agent_label(
+                                    source,
+                                    meta_dict,
+                                    tool_name=name,
+                                    active_subagent=active_subagent,
+                                    is_root_graph=is_root_graph,
+                                )
+                                or display_source
+                            )
                             if tc_id not in pending_tool_calls:
-                                _flush_reasoning(source)
+                                _flush_reasoning(tool_source)
                                 pending_tool_calls[tc_id] = {
                                     "name": name,
                                     "args": args_str,
                                     "args_emitted": False,
                                 }
-                                logger.info("[tool_start|%s] %s", source, name)
+                                logger.info("[tool_start|%s] %s", tool_source, name)
                                 yield _sse(
                                     StreamToolStartEvent(
                                         tool_call_id=tc_id,
                                         tool_name=name,
-                                        source=source,
+                                        source=tool_source,
                                     )
                                 )
-                                yield _sse(_thinking_for_tool(name, args, source))
+                                yield _sse(
+                                    _thinking_for_tool(name, args, tool_source)
+                                )
+                                if name == "task":
+                                    for switch_sse in _note_task_subagent(args):
+                                        yield switch_sse
                             elif args_str:
                                 pending_tool_calls[tc_id]["args"] = args_str
-                            for event in _emit_buffered_tool_args(tc_id, source):
+                                if name == "task":
+                                    for switch_sse in _note_task_subagent(args_str):
+                                        yield switch_sse
+                            for event in _emit_buffered_tool_args(tc_id, tool_source):
                                 yield event
 
                 elif isinstance(msg_chunk, ToolMessage):
-                    _flush_reasoning(source)
+                    _flush_reasoning(display_source)
                     tc_id = getattr(msg_chunk, "tool_call_id", None) or ""
                     if tc_id:
-                        for event in _emit_buffered_tool_args(str(tc_id), source):
+                        for event in _emit_buffered_tool_args(str(tc_id), display_source):
                             yield event
                     else:
                         # Fallback: flush oldest un-emitted buffered args
                         for pending_id, info in pending_tool_calls.items():
                             if not info.get("args_emitted") and info.get("args"):
-                                for event in _emit_buffered_tool_args(pending_id, source):
+                                for event in _emit_buffered_tool_args(
+                                    pending_id, display_source
+                                ):
                                     yield event
                                 break
 
@@ -376,9 +675,34 @@ async def map_agent_stream(
                         else json.dumps(msg_chunk.content, ensure_ascii=False)
                     )
                     tool_name = msg_chunk.name or "tool"
+
+                    # Infer child agent from domain tools or skill-path ls results
+                    for switch_sse in _emit_agent_switch(
+                        source,
+                        meta_dict,
+                        tool_name=tool_name,
+                        is_root_graph=is_root_graph,
+                    ):
+                        yield switch_sse
+                    if tool_name == "ls":
+                        skills_agent = _agent_from_skills_path(result_text)
+                        if skills_agent:
+                            for switch_sse in _force_agent_switch(skills_agent):
+                                yield switch_sse
+
+                    tool_source = (
+                        _resolve_agent_label(
+                            source,
+                            meta_dict,
+                            tool_name=tool_name,
+                            active_subagent=active_subagent,
+                            is_root_graph=is_root_graph,
+                        )
+                        or display_source
+                    )
                     logger.info(
                         "[tool_result|%s] %s: %s",
-                        source,
+                        tool_source,
                         tool_name,
                         result_text[:500],
                     )
@@ -386,37 +710,55 @@ async def map_agent_stream(
                         StreamToolResultEvent(
                             tool_name=tool_name,
                             result=result_text[:4000],
-                            source=source,
+                            source=tool_source,
                         )
                     )
                     yield _sse(
                         StreamThinkingEvent(
                             category="tool",
                             content=f"Tool completed: {tool_name}",
-                            source=source,
+                            source=tool_source,
                             metadata={"result_preview": result_text[:500]},
                         )
                     )
 
+                    # ``task`` returned to the main agent — hand control back
+                    if tool_name == "task" and is_root_graph:
+                        for switch_sse in _force_agent_switch("main"):
+                            yield switch_sse
+
             elif mode == "updates":
+                for switch_sse in _emit_agent_switch(
+                    source, None, is_root_graph=is_root_graph
+                ):
+                    yield switch_sse
                 if not isinstance(data, dict):
                     continue
+                plan_source = (
+                    _resolve_agent_label(
+                        source,
+                        None,
+                        active_subagent=active_subagent,
+                        is_root_graph=is_root_graph,
+                    )
+                    or source
+                )
                 for _node, update in data.items():
                     if not isinstance(update, dict):
                         continue
                     todos = update.get("todos")
                     if todos is not None:
-                        _flush_reasoning(source)
+                        _flush_reasoning(plan_source)
                         summary = ", ".join(
                             f"[{t.get('status', '?')}] {t.get('content', '')}" for t in todos
                         )
-                        logger.info("[plan|%s] %s", source, summary)
-                        yield _sse(StreamPlanEvent(todos=todos, source=source))
+                        logger.info("[plan|%s] %s", plan_source, summary)
+                        yield _sse(StreamPlanEvent(todos=todos, source=plan_source))
                         yield _sse(
                             StreamThinkingEvent(
                                 category="plan",
                                 content=f"Plan updated: {summary}",
-                                source=source,
+                                source=plan_source,
                                 metadata={"todos": todos},
                             )
                         )

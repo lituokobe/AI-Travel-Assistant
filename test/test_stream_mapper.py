@@ -6,12 +6,17 @@ from langchain_core.messages import AIMessageChunk
 from langgraph.types import Interrupt
 
 from api_view.services.stream_mapper import (
+    _agent_from_skills_path,
+    _agent_from_tool_name,
+    _display_agent_name,
     _extract_interrupts,
     _extract_reasoning,
     _extract_visible_text,
     _format_tool_args,
     _is_internal_llm_run,
     _normalize_tool_call,
+    _parse_subagent_type,
+    _resolve_agent_label,
     _strip_trailing_memory_json,
     _thinking_for_tool,
 )
@@ -70,14 +75,106 @@ def test_is_internal_llm_run_detects_memory_tag():
     assert _is_internal_llm_run({"run_name": "memory_entity_extract"})
 
 def test_thinking_for_task_delegation():
-    event = _thinking_for_tool("task", {"description": "search flights"}, "main")
+    event = _thinking_for_tool(
+        "task",
+        {"subagent_type": "hotels-agent", "description": "search hotels"},
+        "main",
+    )
     assert event.category == "delegation"
-    assert "search flights" in event.content
+    assert "hotels-agent" in event.content
+    assert event.metadata.get("subagent_type") == "hotels-agent"
 
 
 def test_thinking_for_write_todos():
     event = _thinking_for_tool("write_todos", {"todos": []}, "main")
     assert event.category == "plan"
+
+
+def test_agent_from_tool_name():
+    assert _agent_from_tool_name("hotels_search") == "hotels-agent"
+    assert _agent_from_tool_name("flights_book") == "flights-agent"
+    assert _agent_from_tool_name("car_update") == "car-agent"
+    assert _agent_from_tool_name("activity_search") == "activity-agent"
+    assert _agent_from_tool_name("task") is None
+    assert _agent_from_tool_name("ls") is None
+
+
+def test_agent_from_skills_path():
+    assert (
+        _agent_from_skills_path("['/skills/hotels/__init__.py']") == "hotels-agent"
+    )
+    assert _agent_from_skills_path("['/skills/activity/__init__.py']") == "activity-agent"
+    assert _agent_from_skills_path("[]") is None
+
+
+def test_parse_subagent_type():
+    assert (
+        _parse_subagent_type({"subagent_type": "hotels-agent", "description": "x"})
+        == "hotels-agent"
+    )
+    assert (
+        _parse_subagent_type('{"subagent_type": "flights-agent", "description": "go"}')
+        == "flights-agent"
+    )
+    assert _parse_subagent_type("{}") is None
+    assert _parse_subagent_type({}) is None
+
+
+def test_format_tool_args_skips_empty_dict():
+    assert _format_tool_args({}) == ""
+    assert "SFO" in _format_tool_args({"from": "SFO"})
+
+
+def test_resolve_agent_label_from_node():
+    assert (
+        _resolve_agent_label("main", {"langgraph_node": "flights-agent"})
+        == "flights-agent"
+    )
+
+
+def test_resolve_agent_label_ignores_model_node_on_root():
+    assert (
+        _resolve_agent_label(
+            "model:abc",
+            {"langgraph_node": "model:abc"},
+            is_root_graph=True,
+        )
+        == "main"
+    )
+
+
+def test_resolve_agent_label_from_tool_in_opaque_subgraph():
+    assert (
+        _resolve_agent_label(
+            "tools:cdf90704-a5c3-cb29-354a-1f3ea897e47a",
+            None,
+            tool_name="hotels_search",
+            is_root_graph=False,
+        )
+        == "hotels-agent"
+    )
+
+
+def test_resolve_agent_label_uses_active_subagent_in_subgraph():
+    assert (
+        _resolve_agent_label(
+            "tools:abc",
+            None,
+            active_subagent="activity-agent",
+            is_root_graph=False,
+        )
+        == "activity-agent"
+    )
+
+
+def test_resolve_agent_label_from_namespace():
+    assert _resolve_agent_label("hotels-agent", None) == "hotels-agent"
+    assert _resolve_agent_label("main", None) == "main"
+
+
+def test_display_agent_name():
+    assert _display_agent_name("main") == "main agent"
+    assert _display_agent_name("flights-agent") == "flights-agent"
 
 
 def test_extract_reasoning_from_additional_kwargs():
@@ -125,6 +222,7 @@ def test_extract_interrupt_approval():
     )
     events = _extract_interrupts({"__interrupt__": [intr]}, "thread-2")
     assert events[0].interrupt_type == "approval"
+    assert events[0].payload["actions"][0]["name"] == "flights_cancel"
 
 
 def test_sse_event_serializes():
