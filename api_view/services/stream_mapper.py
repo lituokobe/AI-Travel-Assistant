@@ -69,6 +69,13 @@ _KNOWN_SUBAGENTS = frozenset(
     {"hotels-agent", "flights-agent", "car-agent", "activity-agent"}
 )
 
+# Agent skills live under /skills/{scope}/{skill_name}/SKILL.md
+_SKILL_MD_RE = re.compile(
+    r"(?P<path>/skills/(?P<scope>[^/\s\"']+)/(?P<skill>[^/\s\"']+)/SKILL\.md)",
+    re.IGNORECASE,
+)
+_FILE_PATH_ARG_KEYS = ("file_path", "path", "file", "filename")
+
 
 def _agent_from_tool_name(tool_name: str | None) -> str | None:
     """Map a domain tool (e.g. hotels_search) to its owning child agent."""
@@ -106,6 +113,108 @@ def _parse_subagent_type(args: Any) -> str | None:
         if agent in text:
             return agent
     return None
+
+
+def _extract_path_from_tool_args(args: Any) -> str:
+    """Best-effort file path from read_file-style tool args."""
+    if isinstance(args, dict):
+        for key in _FILE_PATH_ARG_KEYS:
+            value = args.get(key)
+            if value:
+                return str(value)
+        return ""
+    if not args:
+        return ""
+    text = args if isinstance(args, str) else _format_tool_args(args)
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            for key in _FILE_PATH_ARG_KEYS:
+                value = parsed.get(key)
+                if value:
+                    return str(value)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return text
+
+
+def _parse_skill_activation(tool_name: str | None, args: Any) -> dict[str, str] | None:
+    """
+    Detect when a tool call activates or assigns an agent skill.
+
+    DeepAgents skills are progressive docs: the model ``read_file``s
+    ``/skills/{scope}/{skill}/SKILL.md``. ``assign_skill`` is our custom tool.
+    Future skills under any scope are covered by the path pattern.
+    """
+    # Already-normalized skill info (e.g. carried on pending_tool_calls)
+    if isinstance(args, dict) and args.get("skill") and args.get("action"):
+        return {
+            "skill": str(args["skill"]),
+            "scope": str(args.get("scope") or "main"),
+            "path": str(args.get("path") or ""),
+            "action": str(args["action"]),
+            **(
+                {"agent": str(args["agent"])}
+                if args.get("agent")
+                else {}
+            ),
+        }
+
+    name = (tool_name or "").strip()
+    if name == "assign_skill":
+        skill = ""
+        agent = ""
+        if isinstance(args, dict):
+            skill = str(args.get("skill_name") or args.get("skill") or "").strip()
+            agent = str(args.get("agent_name") or args.get("agent") or "").strip()
+        else:
+            text = args if isinstance(args, str) else _format_tool_args(args)
+            m_skill = re.search(r'"skill_name"\s*:\s*"([^"]+)"', text or "")
+            m_agent = re.search(r'"agent_name"\s*:\s*"([^"]+)"', text or "")
+            skill = m_skill.group(1).strip() if m_skill else ""
+            agent = m_agent.group(1).strip() if m_agent else ""
+        if not skill:
+            return None
+        return {
+            "skill": skill,
+            "scope": agent or "main",
+            "path": f"/skills/main/{skill}/SKILL.md",
+            "action": "assign",
+            "agent": agent or "main",
+        }
+
+    if name in ("read_file", "read_file_tool"):
+        path = _extract_path_from_tool_args(args)
+        match = _SKILL_MD_RE.search(path)
+        if not match:
+            # Also accept path-only fragments in streaming JSON
+            match = _SKILL_MD_RE.search(str(args or ""))
+        if not match:
+            return None
+        return {
+            "skill": match.group("skill"),
+            "scope": match.group("scope"),
+            "path": match.group("path"),
+            "action": "activate",
+        }
+
+    return None
+
+
+def _skill_thinking_event(info: dict[str, str], source: str) -> StreamThinkingEvent:
+    skill = info.get("skill") or "skill"
+    action = info.get("action") or "activate"
+    if action == "assign":
+        agent = info.get("agent") or info.get("scope") or "main"
+        content = f"Assign skill: {skill} → {agent}"
+    else:
+        content = f"Skill: {skill}"
+    return StreamThinkingEvent(
+        category="status",
+        content=content,
+        source=source,
+        metadata={"kind": "skill", **info},
+    )
 
 
 def _resolve_agent_label(
@@ -418,6 +527,8 @@ async def map_agent_stream(
     # Subgraph stream namespaces are often ``tools:<uuid>``, so we keep this
     # explicitly and also refine it from domain tool names.
     active_subagent: str | None = None
+    # Deduplicate skill activation bubbles within one turn
+    seen_skills: set[str] = set()
 
     def _flush_reasoning(src: str) -> None:
         if reasoning_buf:
@@ -458,6 +569,23 @@ async def map_agent_stream(
         active_subagent = sub
         return _force_agent_switch(sub)
 
+    def _note_skill(tool_name: str | None, args: Any, source: str) -> list[str]:
+        """Emit a thinking bubble when a skill is activated or assigned."""
+        info = _parse_skill_activation(tool_name, args)
+        if not info:
+            return []
+        key = f"{info.get('action')}:{info.get('scope')}:{info.get('skill')}"
+        if key in seen_skills:
+            return []
+        seen_skills.add(key)
+        logger.info(
+            "[skill|%s] %s %s",
+            source,
+            info.get("action"),
+            info.get("skill"),
+        )
+        return [_sse(_skill_thinking_event(info, source))]
+
     def _emit_buffered_tool_args(tc_id: str, source: str) -> list[str]:
         """Emit one consolidated tool_args SSE for a buffered call (if any)."""
         info = pending_tool_calls.get(tc_id)
@@ -469,8 +597,13 @@ async def map_agent_stream(
         info["args_emitted"] = True
         logger.info("[tool_args|%s] %s", source, args_str[:800])
         events = [_sse(StreamToolArgsEvent(args=args_str))]
-        if info.get("name") == "task":
+        tool_name = info.get("name") or ""
+        if tool_name == "task":
             events.extend(_note_task_subagent(args_str))
+        skill_info = _parse_skill_activation(tool_name, args_str)
+        if skill_info:
+            info["skill"] = skill_info
+            events.extend(_note_skill(tool_name, args_str, source))
         return events
 
     try:
@@ -594,12 +727,30 @@ async def map_agent_stream(
                                 pending_tool_calls[tc_id]["args"] += _format_tool_args(
                                     chunk_args
                                 )
-                                # Partial JSON may already contain subagent_type
-                                if pending_tool_calls[tc_id]["name"] == "task":
-                                    for switch_sse in _note_task_subagent(
-                                        pending_tool_calls[tc_id]["args"]
-                                    ):
+                                pending_args = pending_tool_calls[tc_id]["args"]
+                                pending_name = pending_tool_calls[tc_id]["name"]
+                                chunk_source = (
+                                    _resolve_agent_label(
+                                        source,
+                                        meta_dict,
+                                        tool_name=pending_name,
+                                        active_subagent=active_subagent,
+                                        is_root_graph=is_root_graph,
+                                    )
+                                    or display_source
+                                )
+                                if pending_name == "task":
+                                    for switch_sse in _note_task_subagent(pending_args):
                                         yield switch_sse
+                                skill_info = _parse_skill_activation(
+                                    pending_name, pending_args
+                                )
+                                if skill_info:
+                                    pending_tool_calls[tc_id]["skill"] = skill_info
+                                    for skill_sse in _note_skill(
+                                        pending_name, pending_args, chunk_source
+                                    ):
+                                        yield skill_sse
 
                     if isinstance(msg_chunk, AIMessage) and msg_chunk.tool_calls:
                         for tc in msg_chunk.tool_calls:
@@ -645,11 +796,25 @@ async def map_agent_stream(
                                 if name == "task":
                                     for switch_sse in _note_task_subagent(args):
                                         yield switch_sse
+                                skill_info = _parse_skill_activation(name, args)
+                                if skill_info:
+                                    pending_tool_calls[tc_id]["skill"] = skill_info
+                                    for skill_sse in _note_skill(
+                                        name, args, tool_source
+                                    ):
+                                        yield skill_sse
                             elif args_str:
                                 pending_tool_calls[tc_id]["args"] = args_str
                                 if name == "task":
                                     for switch_sse in _note_task_subagent(args_str):
                                         yield switch_sse
+                                skill_info = _parse_skill_activation(name, args_str)
+                                if skill_info:
+                                    pending_tool_calls[tc_id]["skill"] = skill_info
+                                    for skill_sse in _note_skill(
+                                        name, args_str, tool_source
+                                    ):
+                                        yield skill_sse
                             for event in _emit_buffered_tool_args(tc_id, tool_source):
                                 yield event
 
@@ -700,6 +865,25 @@ async def map_agent_stream(
                         )
                         or display_source
                     )
+
+                    pending_info = (
+                        pending_tool_calls.get(str(tc_id)) if tc_id else None
+                    ) or {}
+                    skill_info = pending_info.get("skill") or _parse_skill_activation(
+                        tool_name, pending_info.get("args")
+                    )
+                    if skill_info:
+                        for skill_sse in _note_skill(
+                            tool_name, pending_info.get("args") or skill_info, tool_source
+                        ):
+                            yield skill_sse
+                        # Avoid dumping the full SKILL.md into the thinking UI
+                        if tool_name in ("read_file", "read_file_tool"):
+                            result_text = (
+                                f"Loaded skill `{skill_info.get('skill')}` "
+                                f"from {skill_info.get('path') or 'SKILL.md'}"
+                            )
+
                     logger.info(
                         "[tool_result|%s] %s: %s",
                         tool_source,

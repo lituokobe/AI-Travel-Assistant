@@ -309,8 +309,10 @@ def register_flights_tools(mcp: FastMCP):
             conn.close()
             return "Cannot find ticket with the given ticket no."
 
+        # Ownership lives on ``tickets`` (ticket_no, book_ref, passenger_id).
+        # ``flight_id`` is only on ``ticket_flights`` / ``boarding_passes``.
         cursor.execute(
-            "SELECT flight_id FROM tickets WHERE ticket_no = ? AND passenger_id = ?",
+            "SELECT ticket_no FROM tickets WHERE ticket_no = ? AND passenger_id = ?",
             (ticket_no, passenger_id),
         )
         current_ticket = cursor.fetchone()
@@ -322,7 +324,11 @@ def register_flights_tools(mcp: FastMCP):
                 f"not the owner of {ticket_no}."
             )
 
+        cursor.execute(
+            "DELETE FROM boarding_passes WHERE ticket_no = ?", (ticket_no,)
+        )
         cursor.execute("DELETE FROM ticket_flights WHERE ticket_no = ?", (ticket_no,))
+        cursor.execute("DELETE FROM tickets WHERE ticket_no = ?", (ticket_no,))
         conn.commit()
 
         cursor.close()

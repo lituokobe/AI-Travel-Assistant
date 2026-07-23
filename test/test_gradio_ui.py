@@ -4,6 +4,7 @@ from gradio_ui.app import (
     _OPTION_APPROVE,
     _OPTION_REJECT,
     _approval_actions,
+    _approval_resume_value,
     _build_interrupt_reply,
     _format_process_event,
     _pretty_payload,
@@ -72,6 +73,42 @@ def test_format_agent_switch_thinking():
     assert text == "**Current:** hotels-agent"
 
 
+def test_format_skill_thinking():
+    text = _format_process_event(
+        {
+            "type": "thinking",
+            "category": "status",
+            "content": "Skill: compound-travel-package",
+            "metadata": {
+                "kind": "skill",
+                "skill": "compound-travel-package",
+                "scope": "main",
+                "action": "activate",
+            },
+        }
+    )
+    assert text == "**Skill:** `compound-travel-package`"
+
+
+def test_format_skill_assign_thinking():
+    text = _format_process_event(
+        {
+            "type": "thinking",
+            "category": "status",
+            "content": "Assign skill: web-fetcher → hotels-agent",
+            "metadata": {
+                "kind": "skill",
+                "skill": "web-fetcher",
+                "action": "assign",
+                "agent": "hotels-agent",
+            },
+        }
+    )
+    assert "**Skill assign:**" in text
+    assert "web-fetcher" in text
+    assert "hotels-agent" in text
+
+
 def test_format_delegation_thinking():
     text = _format_process_event(
         {
@@ -118,17 +155,100 @@ def test_build_approval_interrupt_reply_has_options():
                 "actions": [
                     {
                         "name": "hotels_book",
-                        "args": {"hotel_id": 1, "user_id": "3442 587242"},
+                        "args": {
+                            "hotel_id": 1,
+                            "user_id": "3442 587242",
+                            "checkin_date": "2026-07-24",
+                            "checkout_date": "2026-07-28",
+                        },
                     }
                 ]
             },
         }
     )
     assert reply["role"] == "assistant"
-    assert "hotels_book" in reply["content"]
-    assert "Approve" in reply["content"] or "approval" in reply["content"].lower()
+    # Must be natural language — never expose tool names
+    assert "hotels_book" not in reply["content"]
+    assert "Book hotel stay" in reply["content"]
+    assert "Check-in" in reply["content"]
+    assert "Approve" in reply["content"] or "approve" in reply["content"].lower()
     values = {o["value"] for o in reply["options"]}
     assert values == {_OPTION_APPROVE, _OPTION_REJECT}
+
+
+def test_build_approval_interrupt_reply_no_tool_names_for_cancel():
+    reply = _build_interrupt_reply(
+        {
+            "interrupt_type": "approval",
+            "payload": {
+                "actions": [
+                    {
+                        "name": "flights_cancel",
+                        "args": {
+                            "ticket_no": "7240005432906569",
+                            "passenger_id": "3442 587242",
+                        },
+                    }
+                ]
+            },
+        }
+    )
+    assert "flights_cancel" not in reply["content"]
+    assert "Cancel flight ticket" in reply["content"]
+    assert "Ticket number" in reply["content"]
+    assert "7240005432906569" in reply["content"]
+
+
+def test_approval_resume_value_expands_to_all_actions():
+    payload = {
+        "actions": [
+            {"name": "hotels_book", "args": {"hotel_id": 2}},
+            {"name": "hotels_book", "args": {"hotel_id": 7}},
+            {"name": "hotels_book", "args": {"hotel_id": 9}},
+        ]
+    }
+    value = _approval_resume_value("approve", payload)
+    assert value == {
+        "decisions": [{"type": "approve"}, {"type": "approve"}, {"type": "approve"}]
+    }
+    reject = _approval_resume_value("reject", payload)
+    assert len(reject["decisions"]) == 3
+    assert all(d["type"] == "reject" for d in reject["decisions"])
+
+
+def test_approval_resume_value_single_action():
+    value = _approval_resume_value(
+        "approve", {"actions": [{"name": "flights_cancel", "args": {}}]}
+    )
+    assert value == {"decisions": [{"type": "approve"}]}
+
+
+def test_build_multi_approval_interrupt_warns_when_many_books():
+    reply = _build_interrupt_reply(
+        {
+            "interrupt_type": "approval",
+            "payload": {
+                "actions": [
+                    {
+                        "name": "hotels_book",
+                        "args": {"hotel_id": 2, "checkin_date": "2026-07-24"},
+                    },
+                    {
+                        "name": "hotels_book",
+                        "args": {"hotel_id": 7, "checkin_date": "2026-07-24"},
+                    },
+                    {
+                        "name": "hotels_book",
+                        "args": {"hotel_id": 9, "checkin_date": "2026-07-24"},
+                    },
+                ]
+            },
+        }
+    )
+    assert "hotels_book" not in reply["content"]
+    assert "3 changes" in reply["content"]
+    assert "Reject" in reply["content"]
+    assert "only meant to reserve one" in reply["content"].lower()
 
 
 def test_build_travel_info_interrupt_reply():

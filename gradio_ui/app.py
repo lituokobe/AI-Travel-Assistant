@@ -87,34 +87,154 @@ def _approval_actions(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     return out
 
 
+# Map internal tool names → customer-facing labels (never show raw tool ids to users)
+_TOOL_ACTION_LABELS: dict[str, str] = {
+    "flights_cancel": "Cancel flight ticket",
+    "flights_book": "Book flight",
+    "flights_update": "Change flight booking",
+    "hotels_book": "Book hotel stay",
+    "hotels_update": "Update hotel reservation",
+    "hotels_cancel": "Cancel hotel reservation",
+    "car_book": "Book car rental",
+    "car_update": "Update car rental",
+    "car_cancel": "Cancel car rental",
+    "activity_book": "Book activity",
+    "activity_update": "Update activity booking",
+    "activity_cancel": "Cancel activity booking",
+}
+
+
+def _friendly_action_title(tool_name: str) -> str:
+    key = (tool_name or "").strip()
+    if key in _TOOL_ACTION_LABELS:
+        return _TOOL_ACTION_LABELS[key]
+    # Generic fallback without exposing snake_case tool ids
+    if key.endswith("_cancel"):
+        return "Cancel booking"
+    if key.endswith("_book"):
+        return "Create booking"
+    if key.endswith("_update"):
+        return "Update booking"
+    return "Confirm this travel change"
+
+
+def _friendly_arg_lines(tool_name: str, args: dict[str, Any]) -> list[str]:
+    """Render approval args as plain labels — no tool/parameter jargon dumps."""
+    if not isinstance(args, dict) or not args:
+        return []
+    lines: list[str] = []
+    label_map = {
+        "ticket_no": "Ticket number",
+        "passenger_id": "Passenger ID",
+        "user_id": "Guest ID",
+        "flight_id": "Flight",
+        "new_flight_id": "New flight",
+        "hotel_id": "Hotel",
+        "checkin_date": "Check-in",
+        "checkout_date": "Check-out",
+        "rental_id": "Car rental",
+        "start_date": "Start date",
+        "end_date": "End date",
+        "reservation_id": "Reservation ID",
+        "recommendation_id": "Activity",
+        "fare_conditions": "Cabin / fare",
+    }
+    # Prefer a stable, readable order
+    preferred = [
+        "ticket_no",
+        "flight_id",
+        "new_flight_id",
+        "hotel_id",
+        "checkin_date",
+        "checkout_date",
+        "rental_id",
+        "start_date",
+        "end_date",
+        "reservation_id",
+        "recommendation_id",
+        "fare_conditions",
+        "passenger_id",
+        "user_id",
+    ]
+    seen: set[str] = set()
+    for key in preferred:
+        if key not in args or args[key] in (None, ""):
+            continue
+        seen.add(key)
+        lines.append(f"- {label_map.get(key, key.replace('_', ' ').title())}: {args[key]}")
+    for key, value in args.items():
+        if key in seen or value in (None, ""):
+            continue
+        # Skip obvious internals
+        if key in ("tool", "name", "type"):
+            continue
+        lines.append(f"- {label_map.get(key, key.replace('_', ' ').title())}: {value}")
+    return lines
+
+
+def _approval_resume_value(decision: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """LangGraph requires one decision entry per hanging tool call."""
+    n = max(1, len(_approval_actions(payload)))
+    return {"decisions": [{"type": decision} for _ in range(n)]}
+
+
 def _build_interrupt_reply(event: dict[str, Any]) -> dict[str, Any]:
     """
     Real assistant bubble for HITL — never leave the user stranded in thinking steps.
 
     Approval interrupts include in-chat Approve / Reject options.
+    User-facing copy must be natural language (no tool / agent / skill names).
     """
     itype = event.get("interrupt_type") or "interrupt"
     payload = event.get("payload") or {}
 
     if itype == "approval":
         actions = _approval_actions(payload)
-        lines = [
-            "I need your approval before I continue with this action.",
-            "",
-        ]
-        if not actions:
-            lines.append("A sensitive operation is waiting for your decision.")
-        for i, action in enumerate(actions, start=1):
-            name = action.get("name") or "action"
-            args = action.get("args") or {}
-            prefix = f"**Action {i}:**" if len(actions) > 1 else "**Action:**"
-            lines.append(f"{prefix} `{name}`")
-            pretty = _pretty_payload(args, _MAX_ARGS_CHARS)
-            if pretty:
-                lines.append("**Details:**")
-                lines.append(f"```\n{pretty}\n```")
+        n = len(actions)
+        lines: list[str] = []
+        if n == 0:
+            lines.append(
+                "I need your confirmation before I make a change to your travel plans."
+            )
+        elif n == 1:
+            title = _friendly_action_title(str(actions[0].get("name") or ""))
+            lines.append(f"Please confirm: **{title}**.")
+            detail = _friendly_arg_lines(
+                str(actions[0].get("name") or ""),
+                actions[0].get("args") or {},
+            )
+            if detail:
+                lines.append("")
+                lines.extend(detail)
+        else:
+            lines.append(
+                f"Please confirm the following **{n} changes** "
+                "(approve confirms all of them; reject cancels all of them):"
+            )
             lines.append("")
-        lines.append("Please **Approve** or **Reject** to continue.")
+            for i, action in enumerate(actions, start=1):
+                title = _friendly_action_title(str(action.get("name") or ""))
+                lines.append(f"**{i}. {title}**")
+                detail = _friendly_arg_lines(
+                    str(action.get("name") or ""), action.get("args") or {}
+                )
+                lines.extend(detail)
+                lines.append("")
+            # Soft guidance when many hotel/flight books appear at once
+            book_tools = {
+                str(a.get("name") or "")
+                for a in actions
+                if str(a.get("name") or "").endswith("_book")
+            }
+            if len(book_tools) == 1 and n > 1:
+                lines.append(
+                    "_Note: several bookings were prepared at once. "
+                    "If you only meant to reserve one option, please Reject "
+                    "and tell me which single option you prefer._"
+                )
+                lines.append("")
+
+        lines.append("Tap **Approve** or **Reject** to continue.")
         return {
             "role": "assistant",
             "content": "\n".join(lines).rstrip(),
@@ -159,6 +279,17 @@ def _format_process_event(event: dict[str, Any]) -> str | None:
             # content is already "Current: …"
             label = content.removeprefix("Current:").strip()
             return f"**Current:** {label}"
+        if category == "status" and meta.get("kind") == "skill":
+            skill = (meta.get("skill") or "").strip()
+            action = (meta.get("action") or "activate").strip()
+            scope = (meta.get("scope") or "").strip()
+            if action == "assign":
+                agent = (meta.get("agent") or scope or "main").strip()
+                label = skill or content
+                return f"**Skill assign:** `{label}` → `{agent}`"
+            label = skill or content.removeprefix("Skill:").strip()
+            scope_bit = f" (`{scope}`)" if scope and scope != "main" else ""
+            return f"**Skill:** `{label}`{scope_bit}"
         if category == "delegation":
             return f"**Handover:** {content}"
         # Skip tool/plan/reasoning thinking — covered by tool_* / plan events
@@ -426,7 +557,10 @@ def _resume_interrupt(
                 *_hitl_visibility(),
             )
             return
-        resume_value: Any = {"decisions": [{"type": decision}]}
+        # LangGraph HITL requires one decision per hanging tool call
+        resume_value: Any = _approval_resume_value(
+            decision, (interrupt or {}).get("payload")
+        )
         resume_label = decision
     else:
         if not (resume_text or "").strip():

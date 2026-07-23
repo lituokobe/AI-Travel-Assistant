@@ -15,8 +15,10 @@ from api_view.services.stream_mapper import (
     _format_tool_args,
     _is_internal_llm_run,
     _normalize_tool_call,
+    _parse_skill_activation,
     _parse_subagent_type,
     _resolve_agent_label,
+    _skill_thinking_event,
     _strip_trailing_memory_json,
     _thinking_for_tool,
 )
@@ -175,6 +177,62 @@ def test_resolve_agent_label_from_namespace():
 def test_display_agent_name():
     assert _display_agent_name("main") == "main agent"
     assert _display_agent_name("flights-agent") == "flights-agent"
+
+
+def test_parse_skill_activation_from_read_file():
+    info = _parse_skill_activation(
+        "read_file",
+        {"file_path": "/skills/main/compound-travel-package/SKILL.md"},
+    )
+    assert info is not None
+    assert info["skill"] == "compound-travel-package"
+    assert info["scope"] == "main"
+    assert info["action"] == "activate"
+
+
+def test_parse_skill_activation_from_partial_json():
+    info = _parse_skill_activation(
+        "read_file",
+        '{"file_path": "/skills/flights/some-skill/SKILL.md"}',
+    )
+    assert info is not None
+    assert info["skill"] == "some-skill"
+    assert info["scope"] == "flights"
+
+
+def test_parse_skill_activation_assign():
+    info = _parse_skill_activation(
+        "assign_skill",
+        {"skill_name": "web-fetcher", "agent_name": "hotels-agent"},
+    )
+    assert info is not None
+    assert info["action"] == "assign"
+    assert info["skill"] == "web-fetcher"
+    assert info["agent"] == "hotels-agent"
+
+
+def test_parse_skill_activation_ignores_normal_reads():
+    assert (
+        _parse_skill_activation(
+            "read_file", {"file_path": "/memories/user/preferences.md"}
+        )
+        is None
+    )
+    assert _parse_skill_activation("hotels_search", {}) is None
+
+
+def test_skill_thinking_event():
+    event = _skill_thinking_event(
+        {
+            "skill": "compound-travel-package",
+            "scope": "main",
+            "path": "/skills/main/compound-travel-package/SKILL.md",
+            "action": "activate",
+        },
+        "main",
+    )
+    assert event.metadata["kind"] == "skill"
+    assert "compound-travel-package" in event.content
 
 
 def test_extract_reasoning_from_additional_kwargs():
