@@ -4,9 +4,12 @@ from gradio_ui.app import (
     _OPTION_APPROVE,
     _OPTION_REJECT,
     _approval_actions,
+    _approval_resume_payload,
     _approval_resume_value,
     _build_interrupt_reply,
+    _build_interrupt_reply_from_events,
     _format_process_event,
+    _normalize_option_decision,
     _pretty_payload,
     _process_chat_message,
 )
@@ -156,7 +159,7 @@ def test_build_approval_interrupt_reply_has_options():
                     {
                         "name": "hotels_book",
                         "args": {
-                            "hotel_id": 1,
+                            "hotel_id": 7,
                             "user_id": "3442 587242",
                             "checkin_date": "2026-07-24",
                             "checkout_date": "2026-07-28",
@@ -167,9 +170,12 @@ def test_build_approval_interrupt_reply_has_options():
         }
     )
     assert reply["role"] == "assistant"
-    # Must be natural language — never expose tool names
+    # Must be natural language — never expose tool names or catalog ids
     assert "hotels_book" not in reply["content"]
     assert "Book hotel stay" in reply["content"]
+    assert "hotel_id" not in reply["content"].lower()
+    assert ": 7" not in reply["content"]
+    assert "Sheraton" in reply["content"] or "Hotel:" in reply["content"]
     assert "Check-in" in reply["content"]
     assert "Approve" in reply["content"] or "approve" in reply["content"].lower()
     values = {o["value"] for o in reply["options"]}
@@ -223,6 +229,86 @@ def test_approval_resume_value_single_action():
     assert value == {"decisions": [{"type": "approve"}]}
 
 
+def test_approval_resume_payload_maps_multiple_interrupt_ids():
+    interrupts = [
+        {
+            "interrupt_id": "flight-intr",
+            "interrupt_type": "approval",
+            "payload": {
+                "actions": [
+                    {"name": "flights_book", "args": {"flight_id": 1}},
+                    {"name": "flights_book", "args": {"flight_id": 2}},
+                ]
+            },
+        },
+        {
+            "interrupt_id": "hotel-intr",
+            "interrupt_type": "approval",
+            "payload": {
+                "actions": [
+                    {
+                        "name": "hotels_book",
+                        "args": {"hotel_id": 7, "checkin_date": "2026-07-28"},
+                    }
+                ]
+            },
+        },
+    ]
+    value = _approval_resume_payload("approve", interrupts)
+    assert set(value.keys()) == {"flight-intr", "hotel-intr"}
+    assert value["flight-intr"] == {
+        "decisions": [{"type": "approve"}, {"type": "approve"}]
+    }
+    assert value["hotel-intr"] == {"decisions": [{"type": "approve"}]}
+
+
+def test_build_interrupt_reply_merges_parallel_approvals():
+    reply = _build_interrupt_reply_from_events(
+        [
+            {
+                "interrupt_id": "a",
+                "interrupt_type": "approval",
+                "payload": {
+                    "actions": [
+                        {"name": "flights_book", "args": {"flight_id": 19230}},
+                        {"name": "flights_book", "args": {"flight_id": 1420}},
+                    ]
+                },
+            },
+            {
+                "interrupt_id": "b",
+                "interrupt_type": "approval",
+                "payload": {
+                    "actions": [
+                        {
+                            "name": "hotels_book",
+                            "args": {
+                                "hotel_id": 7,
+                                "checkin_date": "2026-07-28",
+                                "checkout_date": "2026-08-01",
+                            },
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    assert "flights_book" not in reply["content"]
+    assert "hotels_book" not in reply["content"]
+    assert "3 changes" in reply["content"]
+    assert "Book flight" in reply["content"]
+    assert "Book hotel stay" in reply["content"]
+
+
+def test_normalize_option_decision_accepts_labels():
+    assert _normalize_option_decision(_OPTION_APPROVE) == "approve"
+    assert _normalize_option_decision(_OPTION_REJECT) == "reject"
+    assert _normalize_option_decision("✅ Approve") == "approve"
+    assert _normalize_option_decision("❌ Reject") == "reject"
+    assert _normalize_option_decision({"value": _OPTION_APPROVE}) == "approve"
+    assert _normalize_option_decision("something else") is None
+
+
 def test_build_multi_approval_interrupt_warns_when_many_books():
     reply = _build_interrupt_reply(
         {
@@ -249,6 +335,60 @@ def test_build_multi_approval_interrupt_warns_when_many_books():
     assert "3 changes" in reply["content"]
     assert "Reject" in reply["content"]
     assert "only meant to reserve one" in reply["content"].lower()
+
+
+def test_build_approval_collapses_duplicate_flights_for_party_size():
+    reply = _build_interrupt_reply(
+        {
+            "interrupt_type": "approval",
+            "payload": {
+                "actions": [
+                    {
+                        "name": "flights_book",
+                        "args": {
+                            "passenger_id": "3442 587242",
+                            "flight_id": 19230,
+                            "fare_conditions": "Economy",
+                        },
+                    },
+                    {
+                        "name": "flights_book",
+                        "args": {
+                            "passenger_id": "3442 587242",
+                            "flight_id": 19230,
+                            "fare_conditions": "Economy",
+                        },
+                    },
+                    {
+                        "name": "flights_book",
+                        "args": {
+                            "passenger_id": "3442 587242",
+                            "flight_id": 1420,
+                            "fare_conditions": "Economy",
+                        },
+                    },
+                    {
+                        "name": "flights_book",
+                        "args": {
+                            "passenger_id": "3442 587242",
+                            "flight_id": 1420,
+                            "fare_conditions": "Economy",
+                        },
+                    },
+                ]
+            },
+        }
+    )
+    content = reply["content"]
+    assert "4 changes" not in content
+    assert "2 changes" in content
+    assert "4 reservations total" in content
+    assert content.count("Book flight") == 2
+    assert "×2" in content
+    assert "Seats / quantity: 2" in content
+    assert "Luis" in content
+    # Round-trip duplicates are not "pick one hotel" style warnings
+    assert "only meant to reserve one" not in content.lower()
 
 
 def test_build_travel_info_interrupt_reply():

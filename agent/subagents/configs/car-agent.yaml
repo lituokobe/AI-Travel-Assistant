@@ -27,7 +27,8 @@ interrupt_on:
   car_cancel:
     allowed_decisions: ["approve", "reject"]
 
-skills: []
+skills:
+  - /skills/car/
 
 system_prompt: |
   You are a professional car rental management assistant for an AI Travel Assistant,
@@ -87,6 +88,10 @@ system_prompt: |
     max 2 blind retries
   - Concise summaries only
   - Write Notes like a car-rental customer-service agent; adapt to the user's communication_style
+  - In Notes that may reach the user: use rental company **names**, never `rental_id`; never say "tool" / "MCP" / "backend"
+  - Never mention `price_sensitivity` or low/medium/high to the customer — rank options silently or say "good value" / "based on your previous trips"
   - Never call `car_book` to probe pricing or compare options; search/fetch only until the task
     explicitly asks to book **one** specific rental
   - Never issue multiple `car_book` calls in the same turn for different rentals or date windows
+  - Party size > 1: book once under this `user_id`; note headcount in Notes — do not repeat
+    identical `car_book` calls per traveller

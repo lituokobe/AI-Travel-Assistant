@@ -19,7 +19,14 @@ from api_view.models.events import StreamInterruptEvent
 from api_view.models.requests import ResumeRequest, UserContext
 from api_view.services.message_converter import langchain_to_api_message, state_messages_to_api
 from api_view.services.session_service import ensure_session, touch_session
-from api_view.services.stream_mapper import map_agent_stream, _extract_interrupts
+from api_view.services.stream_mapper import (
+    _extract_interrupts,
+    _user_message_from_input,
+    map_agent_stream,
+)
+from api_view.services.user_copy_sanitize import sanitize_user_facing_text
+from agent.config import STORE, SUMMARY_MODEL
+from agent.middlewares.memory_update import run_memory_update_after_turn
 from agent.logger import logger
 
 
@@ -56,7 +63,15 @@ class ChatService:
         messages = state_messages_to_api(result.get("messages", []))
 
         interrupts = _extract_interrupts(result, tid)
-        state = await agent.aget_state(config)
+        try:
+            state = await agent.aget_state(config)
+        except Exception as exc:
+            logger.error(
+                "aget_state failed after chat (returning without interrupt merge): %s",
+                exc,
+                exc_info=True,
+            )
+            state = None
         if state and state.interrupts:
             for intr in state.interrupts:
                 interrupts.extend(_extract_interrupts({"__interrupt__": [intr]}, tid))
@@ -73,7 +88,26 @@ class ChatService:
 
         assistant_replies = [m for m in messages if m.role == "assistant" and m.content]
         if assistant_replies:
-            logger.info("[reply|%s] %s", tid, assistant_replies[-1].content)
+            last = assistant_replies[-1].content or ""
+            logger.info("[reply|%s] %s", tid, last)
+            try:
+                user_msg = _user_message_from_input(
+                    {"messages": [HumanMessage(content=message)]}
+                )
+                if user_msg:
+                    await run_memory_update_after_turn(
+                        store=STORE,
+                        user_id=user.user_id,
+                        user_message=user_msg,
+                        ai_summary=sanitize_user_facing_text(last)[:300],
+                        model=SUMMARY_MODEL,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Post-turn memory update failed after chat: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         return ChatResponse(thread_id=tid, messages=messages)
 
@@ -131,7 +165,15 @@ class ChatService:
         touch_session(request.thread_id)
         messages = state_messages_to_api(result.get("messages", []))
         interrupts = _extract_interrupts(result, request.thread_id)
-        state = await agent.aget_state(config)
+        try:
+            state = await agent.aget_state(config)
+        except Exception as exc:
+            logger.error(
+                "aget_state failed after resume (returning without interrupt merge): %s",
+                exc,
+                exc_info=True,
+            )
+            state = None
         if state and state.interrupts:
             for intr in state.interrupts:
                 interrupts.extend(

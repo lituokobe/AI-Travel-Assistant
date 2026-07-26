@@ -10,14 +10,22 @@ from typing import Any
 import gradio as gr
 
 from api_view.config import DEFAULT_PASSENGER_ID, DEFAULT_USER_ID, DEFAULT_USERNAME, GRADIO_HOST, GRADIO_PORT
+from api_view.services.catalog_display import (
+    collapse_approval_actions,
+    format_approval_arg_lines,
+    quantity_label,
+)
 from gradio_ui.client import TravelAPIClient
 
 client = TravelAPIClient()
 
-# Per-session state (thread_id, pending_interrupt)
+# Per-session state (thread_id, pending HITL interrupts)
 _session: dict[str, Any] = {
     "thread_id": None,
-    "pending_interrupt": None,
+    # One or more interrupt events awaiting resume (LangGraph may pause several at once)
+    "pending_interrupts": [],
+    "username": DEFAULT_USERNAME,
+    "user_id": DEFAULT_USER_ID,
 }
 
 _MEMORY_JSON_TAIL = re.compile(
@@ -118,59 +126,18 @@ def _friendly_action_title(tool_name: str) -> str:
     return "Confirm this travel change"
 
 
-def _friendly_arg_lines(tool_name: str, args: dict[str, Any]) -> list[str]:
-    """Render approval args as plain labels — no tool/parameter jargon dumps."""
-    if not isinstance(args, dict) or not args:
-        return []
-    lines: list[str] = []
-    label_map = {
-        "ticket_no": "Ticket number",
-        "passenger_id": "Passenger ID",
-        "user_id": "Guest ID",
-        "flight_id": "Flight",
-        "new_flight_id": "New flight",
-        "hotel_id": "Hotel",
-        "checkin_date": "Check-in",
-        "checkout_date": "Check-out",
-        "rental_id": "Car rental",
-        "start_date": "Start date",
-        "end_date": "End date",
-        "reservation_id": "Reservation ID",
-        "recommendation_id": "Activity",
-        "fare_conditions": "Cabin / fare",
-    }
-    # Prefer a stable, readable order
-    preferred = [
-        "ticket_no",
-        "flight_id",
-        "new_flight_id",
-        "hotel_id",
-        "checkin_date",
-        "checkout_date",
-        "rental_id",
-        "start_date",
-        "end_date",
-        "reservation_id",
-        "recommendation_id",
-        "fare_conditions",
-        "passenger_id",
-        "user_id",
-    ]
-    seen: set[str] = set()
-    for key in preferred:
-        if key not in args or args[key] in (None, ""):
-            continue
-        seen.add(key)
-        lines.append(f"- {label_map.get(key, key.replace('_', ' ').title())}: {args[key]}")
-    for key, value in args.items():
-        if key in seen or value in (None, ""):
-            continue
-        # Skip obvious internals
-        if key in ("tool", "name", "type"):
-            continue
-        lines.append(f"- {label_map.get(key, key.replace('_', ' ').title())}: {value}")
-    return lines
-
+def _friendly_arg_lines(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    guest_name: str | None = None,
+) -> list[str]:
+    """Render approval args as customer-facing labels (names, not catalog IDs)."""
+    return format_approval_arg_lines(
+        tool_name,
+        args,
+        guest_name=guest_name or _session.get("username"),
+    )
 
 def _approval_resume_value(decision: str, payload: dict[str, Any] | None) -> dict[str, Any]:
     """LangGraph requires one decision entry per hanging tool call."""
@@ -178,61 +145,147 @@ def _approval_resume_value(decision: str, payload: dict[str, Any] | None) -> dic
     return {"decisions": [{"type": decision} for _ in range(n)]}
 
 
+def _pending_interrupts() -> list[dict[str, Any]]:
+    raw = _session.get("pending_interrupts") or []
+    return [e for e in raw if isinstance(e, dict)]
+
+
+def _set_pending_interrupts(events: list[dict[str, Any]] | None) -> None:
+    _session["pending_interrupts"] = list(events or [])
+
+
+def _approval_resume_payload(
+    decision: str, interrupts: list[dict[str, Any]] | None
+) -> Any:
+    """
+    Build LangGraph resume value for one or more approval interrupts.
+
+    Multiple pending interrupts require ``{interrupt_id: decisions_payload, ...}``.
+    A single interrupt may use the plain decisions payload.
+    """
+    events = [e for e in (interrupts or []) if e.get("interrupt_type") == "approval"]
+    if not events:
+        return {"decisions": [{"type": decision}]}
+
+    mapped: dict[str, Any] = {}
+    for event in events:
+        iid = str(event.get("interrupt_id") or "").strip()
+        value = _approval_resume_value(decision, event.get("payload"))
+        if iid and iid != "unknown":
+            mapped[iid] = value
+
+    if len(events) > 1:
+        # LangGraph requires interrupt ids when more than one is pending
+        if len(mapped) != len(events):
+            raise ValueError(
+                "Multiple approvals are pending but some are missing interrupt ids."
+            )
+        return mapped
+    if mapped:
+        # Prefer id-keyed resume even for a single interrupt (forward-compatible)
+        return mapped
+    return _approval_resume_value(decision, events[0].get("payload"))
+
+
+def _collect_approval_actions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("interrupt_type") != "approval":
+            continue
+        actions.extend(_approval_actions(event.get("payload")))
+    return actions
+
+
 def _build_interrupt_reply(event: dict[str, Any]) -> dict[str, Any]:
+    """Build HITL reply for a single interrupt event."""
+    return _build_interrupt_reply_from_events([event])
+
+
+def _build_interrupt_reply_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Real assistant bubble for HITL — never leave the user stranded in thinking steps.
 
-    Approval interrupts include in-chat Approve / Reject options.
+    Merges multiple parallel approval interrupts into one confirmation.
     User-facing copy must be natural language (no tool / agent / skill names).
     """
-    itype = event.get("interrupt_type") or "interrupt"
-    payload = event.get("payload") or {}
+    events = [e for e in events if isinstance(e, dict)]
+    if not events:
+        return {
+            "role": "assistant",
+            "content": (
+                "I've paused and need your input to continue. "
+                "Please use the Resume panel below."
+            ),
+        }
 
-    if itype == "approval":
-        actions = _approval_actions(payload)
-        n = len(actions)
+    approval_events = [e for e in events if e.get("interrupt_type") == "approval"]
+    if approval_events:
+        actions = _collect_approval_actions(approval_events)
+        grouped = collapse_approval_actions(actions)
+        n_raw = len(actions)
+        n = len(grouped)
         lines: list[str] = []
         if n == 0:
             lines.append(
                 "I need your confirmation before I make a change to your travel plans."
             )
         elif n == 1:
-            title = _friendly_action_title(str(actions[0].get("name") or ""))
-            lines.append(f"Please confirm: **{title}**.")
+            item = grouped[0]
+            title = _friendly_action_title(str(item.get("name") or ""))
+            qty = int(item.get("quantity") or 1)
+            if qty > 1:
+                lines.append(f"Please confirm: **{title}** (×{qty}).")
+            else:
+                lines.append(f"Please confirm: **{title}**.")
             detail = _friendly_arg_lines(
-                str(actions[0].get("name") or ""),
-                actions[0].get("args") or {},
+                str(item.get("name") or ""),
+                item.get("args") or {},
             )
             if detail:
                 lines.append("")
                 lines.extend(detail)
+            qline = quantity_label(str(item.get("name") or ""), qty)
+            if qline:
+                lines.append(qline)
         else:
-            lines.append(
-                f"Please confirm the following **{n} changes** "
-                "(approve confirms all of them; reject cancels all of them):"
+            header = (
+                f"Please confirm the following **{n} changes**"
             )
+            if n_raw > n:
+                header += f" ({n_raw} reservations total)"
+            header += " (approve confirms all of them; reject cancels all of them):"
+            lines.append(header)
             lines.append("")
-            for i, action in enumerate(actions, start=1):
-                title = _friendly_action_title(str(action.get("name") or ""))
-                lines.append(f"**{i}. {title}**")
+            for i, item in enumerate(grouped, start=1):
+                title = _friendly_action_title(str(item.get("name") or ""))
+                qty = int(item.get("quantity") or 1)
+                if qty > 1:
+                    lines.append(f"**{i}. {title}** (×{qty})")
+                else:
+                    lines.append(f"**{i}. {title}**")
                 detail = _friendly_arg_lines(
-                    str(action.get("name") or ""), action.get("args") or {}
+                    str(item.get("name") or ""), item.get("args") or {}
                 )
                 lines.extend(detail)
+                qline = quantity_label(str(item.get("name") or ""), qty)
+                if qline:
+                    lines.append(qline)
                 lines.append("")
-            # Soft guidance when many hotel/flight books appear at once
-            book_tools = {
-                str(a.get("name") or "")
-                for a in actions
-                if str(a.get("name") or "").endswith("_book")
-            }
-            if len(book_tools) == 1 and n > 1:
-                lines.append(
-                    "_Note: several bookings were prepared at once. "
-                    "If you only meant to reserve one option, please Reject "
-                    "and tell me which single option you prefer._"
-                )
-                lines.append("")
+            # Warn only for multiple distinct hotel/car/activity options (not round-trip flights)
+            for prefix, label in (
+                ("hotels_book", "hotels"),
+                ("car_book", "car rentals"),
+                ("activity_book", "activities"),
+            ):
+                opts = [g for g in grouped if str(g.get("name") or "") == prefix]
+                if len(opts) > 1:
+                    lines.append(
+                        f"_Note: several different {label} were prepared at once. "
+                        "If you only meant to reserve one option, please Reject "
+                        "and tell me which single option you prefer._"
+                    )
+                    lines.append("")
+                    break
 
         lines.append("Tap **Approve** or **Reject** to continue.")
         return {
@@ -244,17 +297,20 @@ def _build_interrupt_reply(event: dict[str, Any]) -> dict[str, Any]:
             ],
         }
 
-    if itype == "travel_info_request":
-        missing = payload.get("missing_fields") or "(unspecified)"
-        collected = payload.get("collected_data") or "(none yet)"
-        content = (
-            "I need a bit more information before I can continue.\n\n"
-            f"**Still needed:** {missing}\n"
-            f"**Already have:** {collected}\n\n"
-            "Reply in the chat with the missing details, or use the "
-            "**Resume** panel below."
-        )
-        return {"role": "assistant", "content": content}
+    # Prefer travel-info if present
+    for event in events:
+        if event.get("interrupt_type") == "travel_info_request":
+            payload = event.get("payload") or {}
+            missing = payload.get("missing_fields") or "(unspecified)"
+            collected = payload.get("collected_data") or "(none yet)"
+            content = (
+                "I need a bit more information before I can continue.\n\n"
+                f"**Still needed:** {missing}\n"
+                f"**Already have:** {collected}\n\n"
+                "Reply in the chat with the missing details, or use the "
+                "**Resume** panel below."
+            )
+            return {"role": "assistant", "content": content}
 
     return {
         "role": "assistant",
@@ -263,6 +319,22 @@ def _build_interrupt_reply(event: dict[str, Any]) -> dict[str, Any]:
             "Please use the Resume panel below."
         ),
     }
+
+
+def _normalize_option_decision(value: Any) -> str | None:
+    """Map chat option click / label text to approve|reject."""
+    raw = value
+    if isinstance(value, dict):
+        raw = value.get("value") or value.get("label") or ""
+    text = str(raw or "").strip()
+    lowered = text.lower()
+    if text in (_OPTION_APPROVE, _OPTION_REJECT):
+        return "approve" if text == _OPTION_APPROVE else "reject"
+    if "approve" in lowered and "reject" not in lowered:
+        return "approve"
+    if "reject" in lowered:
+        return "reject"
+    return None
 
 
 def _format_process_event(event: dict[str, Any]) -> str | None:
@@ -353,11 +425,14 @@ def _process_chat_message(body: str) -> dict[str, Any]:
 
 def _session_status() -> str:
     status = f"Thread: {_session.get('thread_id') or 'new'}"
-    pending = _session.get("pending_interrupt")
+    pending = _pending_interrupts()
     if pending:
-        itype = pending.get("interrupt_type") or "interrupt"
-        if itype == "approval":
-            status += " | ⚠️ Waiting for Approve / Reject"
+        types = {e.get("interrupt_type") for e in pending}
+        if "approval" in types:
+            n = len(_collect_approval_actions(pending))
+            status += (
+                f" | ⚠️ Waiting for Approve / Reject ({n} change{'s' if n != 1 else ''})"
+            )
         else:
             status += " | ⚠️ Waiting for your input"
     return status
@@ -365,11 +440,9 @@ def _session_status() -> str:
 
 def _hitl_visibility() -> tuple[Any, Any]:
     """Visibility for approval button row and travel-info resume hint."""
-    pending = _session.get("pending_interrupt")
-    is_approval = bool(pending and pending.get("interrupt_type") == "approval")
-    is_info = bool(
-        pending and pending.get("interrupt_type") == "travel_info_request"
-    )
+    pending = _pending_interrupts()
+    is_approval = any(e.get("interrupt_type") == "approval" for e in pending)
+    is_info = any(e.get("interrupt_type") == "travel_info_request" for e in pending)
     return gr.update(visible=is_approval), gr.update(visible=is_info)
 
 
@@ -420,7 +493,7 @@ def _stream_turn_into_chat(
     """
     seen: set[str] = set()
     saw_interrupt = False
-    interrupt_event: dict[str, Any] | None = None
+    interrupt_events: list[dict[str, Any]] = []
     final_started = False
     final_text = ""
     token_since_yield = 0
@@ -469,8 +542,8 @@ def _stream_turn_into_chat(
 
         elif etype == "interrupt":
             saw_interrupt = True
-            interrupt_event = event
-            _session["pending_interrupt"] = event
+            interrupt_events.append(event)
+            _set_pending_interrupts(interrupt_events)
 
         elif etype == "error":
             msg = f"Error: {event.get('message', '')}"
@@ -484,18 +557,25 @@ def _stream_turn_into_chat(
             yield _ui_pack(history)
 
     if not saw_interrupt:
-        _session["pending_interrupt"] = None
+        _set_pending_interrupts([])
 
     if final_started:
         history = _replace_last_assistant(
             history, _clean_assistant_text(final_text) or final_text
         )
 
-    # Always close an interrupt with a real assistant reply (+ Approve/Reject)
-    if interrupt_event is not None:
-        history = history + [_build_interrupt_reply(interrupt_event)]
+    # Always close interrupts with a real assistant reply (+ Approve/Reject)
+    if interrupt_events:
+        history = history + [_build_interrupt_reply_from_events(interrupt_events)]
 
     yield _ui_pack(history)
+
+
+def _remember_user(user_id: str, username: str) -> None:
+    if user_id:
+        _session["user_id"] = user_id
+    if username:
+        _session["username"] = username
 
 
 def _process_stream_events(
@@ -506,6 +586,7 @@ def _process_stream_events(
     passenger_id: str,
 ) -> Iterator[tuple[Any, ...]]:
     """Live-update the chat: user bubble first, then process bubbles, then final reply."""
+    _remember_user(user_id, username)
     history = list(history or []) + [{"role": "user", "content": message}]
     yield _ui_pack(history)
 
@@ -539,16 +620,20 @@ def _resume_interrupt(
     ``decision`` is ``"approve"`` / ``"reject"`` for approval interrupts.
     Otherwise ``resume_text`` is sent (travel-info / free-form).
     """
+    _remember_user(user_id, username)
     thread_id = _session.get("thread_id")
     history = _strip_options(list(history or []))
     if not thread_id:
         yield history, "No active thread", gr.update(), *_hitl_visibility()
         return
 
-    interrupt = _session.get("pending_interrupt")
-    itype = (interrupt or {}).get("interrupt_type")
+    interrupts = _pending_interrupts()
+    approval_events = [e for e in interrupts if e.get("interrupt_type") == "approval"]
+    info_events = [
+        e for e in interrupts if e.get("interrupt_type") == "travel_info_request"
+    ]
 
-    if itype == "approval":
+    if approval_events:
         if decision not in ("approve", "reject"):
             yield (
                 history,
@@ -557,10 +642,16 @@ def _resume_interrupt(
                 *_hitl_visibility(),
             )
             return
-        # LangGraph HITL requires one decision per hanging tool call
-        resume_value: Any = _approval_resume_value(
-            decision, (interrupt or {}).get("payload")
-        )
+        try:
+            resume_value: Any = _approval_resume_payload(decision, approval_events)
+        except ValueError as exc:
+            yield (
+                history,
+                str(exc),
+                gr.update(),
+                *_hitl_visibility(),
+            )
+            return
         resume_label = decision
     else:
         if not (resume_text or "").strip():
@@ -571,12 +662,22 @@ def _resume_interrupt(
                 *_hitl_visibility(),
             )
             return
-        resume_value = resume_text
+        # Travel-info: map by interrupt id when multiple are pending
+        if len(info_events) > 1:
+            resume_value = {
+                str(e.get("interrupt_id")): resume_text
+                for e in info_events
+                if e.get("interrupt_id")
+            }
+        elif len(info_events) == 1 and info_events[0].get("interrupt_id"):
+            resume_value = {str(info_events[0]["interrupt_id"]): resume_text}
+        else:
+            resume_value = resume_text
         resume_label = resume_text
 
     history = history + [{"role": "user", "content": f"[Resume] {resume_label}"}]
     # Clear pending before stream so the bar hides until a new interrupt
-    _session["pending_interrupt"] = None
+    _set_pending_interrupts([])
     yield _ui_pack(history)
 
     try:
@@ -601,25 +702,22 @@ def _on_option_select(
     evt: gr.SelectData,
 ) -> Iterator[tuple[Any, ...]]:
     """Handle in-chat Approve / Reject option clicks."""
-    value = getattr(evt, "value", None) or ""
-    if value == _OPTION_APPROVE:
+    value = getattr(evt, "value", None)
+    decision = _normalize_option_decision(value)
+    if decision in ("approve", "reject"):
         yield from _resume_interrupt(
-            "", history, user_id, username, passenger_id, decision="approve"
+            "", history, user_id, username, passenger_id, decision=decision
         )
-    elif value == _OPTION_REJECT:
-        yield from _resume_interrupt(
-            "", history, user_id, username, passenger_id, decision="reject"
-        )
-    else:
-        # Treat other option values as free-form resume text
-        yield from _resume_interrupt(
-            str(value), history, user_id, username, passenger_id, decision=None
-        )
+        return
+    # Treat other option values as free-form resume text
+    yield from _resume_interrupt(
+        str(value or ""), history, user_id, username, passenger_id, decision=None
+    )
 
 
 def _new_conversation() -> tuple[Any, ...]:
     _session["thread_id"] = None
-    _session["pending_interrupt"] = None
+    _set_pending_interrupts([])
     return [], "New conversation started", "", *_hitl_visibility()
 
 

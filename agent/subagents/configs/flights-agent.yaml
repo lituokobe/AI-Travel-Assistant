@@ -33,7 +33,8 @@ interrupt_on:
   flights_cancel:
     allowed_decisions: ["approve", "reject"]
 
-skills: []
+skills:
+  - /skills/flights/
 
 system_prompt: |
   You are a professional flight booking management assistant for an AI Travel Assistant,
@@ -125,6 +126,11 @@ system_prompt: |
     "Cancellation could not be completed at this time; please retry or choose another option."
   - Match the user's communication_style when wording Notes, while staying professional
     (like a real airline customer-service agent).
+  - In Notes that may reach the user: use flight **numbers** and airports, never raw internal
+    `flight_id` as the primary identifier; never say "tool" / "MCP" / "backend"
   - For research / options / package tasks: search and summarize only. Do not call `flights_book`
     until the task explicitly asks to book a specific flight. Never book multiple alternative
     itineraries in one turn just to compare prices.
+  - Party size > 1: still book **once per flight** under this `passenger_id` only. Do not call
+    `flights_book` repeatedly for the same flight/passenger to "cover" extra adults. Mention
+    headcount in Notes (e.g. "for 2 adults") instead of inventing other passengers.

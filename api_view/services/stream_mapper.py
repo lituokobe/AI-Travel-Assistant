@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, AsyncIterator
 
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from agent.schema import (
     StreamDoneEvent,
@@ -23,7 +23,9 @@ from api_view.models.events import (
     StreamThinkingEvent,
 )
 from agent.logger import logger
-from agent.middlewares.memory_update import MEMORY_UPDATE_TAG
+from agent.config import STORE, SUMMARY_MODEL
+from agent.middlewares.memory_update import MEMORY_UPDATE_TAG, run_memory_update_after_turn
+from api_view.services.user_copy_sanitize import sanitize_user_facing_text
 
 # Trailing JSON that MemoryUpdateMiddleware asks the LLM to emit
 # (leaks into astream when the internal call is not filtered).
@@ -508,6 +510,50 @@ def _extract_interrupts(result: dict[str, Any], thread_id: str) -> list[StreamIn
     return events
 
 
+def _user_message_from_input(input_data: Any) -> str | None:
+    """Last human message text from graph input (streaming turn)."""
+    if not isinstance(input_data, dict):
+        return None
+    messages = input_data.get("messages") or []
+    for msg in reversed(messages):
+        role = getattr(msg, "type", None)
+        if role == "human" or isinstance(msg, HumanMessage):
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+            text = str(content).strip()
+            return text or None
+    return None
+
+
+async def _run_post_turn_memory(
+    context: Any,
+    input_data: Any,
+    assistant_text: str,
+) -> None:
+    user_id = getattr(context, "user_id", None) if context else None
+    user_message = _user_message_from_input(input_data)
+    if not user_id or not user_message:
+        return
+    try:
+        await run_memory_update_after_turn(
+            store=STORE,
+            user_id=user_id,
+            user_message=user_message,
+            ai_summary=assistant_text[:300],
+            model=SUMMARY_MODEL,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Post-turn memory update failed (chat still ok): %s",
+            exc,
+            exc_info=True,
+        )
+
+
 async def map_agent_stream(
     agent: Any,
     input_data: Any,
@@ -517,6 +563,7 @@ async def map_agent_stream(
 ) -> AsyncIterator[str]:
     """Stream agent execution as SSE events."""
     full_response = ""
+    raw_response = ""
     pending_tool_calls: dict[str, dict[str, Any]] = {}
     # Buffer model chain-of-thought chunks and flush them as a single log
     # line so the reasoning reads as one block instead of hundreds of
@@ -674,10 +721,16 @@ async def map_agent_stream(
                     # Subgraph (sub-agent) narration stays out of the user reply;
                     # tool_result / thinking events still cover the under-the-hood story.
                     if text and is_root_graph:
-                        full_response += text
-                        yield _sse(
-                            StreamTokenEvent(content=text, source=display_source)
+                        raw_response += text
+                        sanitized = sanitize_user_facing_text(
+                            _strip_trailing_memory_json(raw_response)
                         )
+                        delta = sanitized[len(full_response) :]
+                        full_response = sanitized
+                        if delta:
+                            yield _sse(
+                                StreamTokenEvent(content=delta, source=display_source)
+                            )
 
                     if hasattr(msg_chunk, "tool_call_chunks") and msg_chunk.tool_call_chunks:
                         for tc in msg_chunk.tool_call_chunks:
@@ -952,7 +1005,24 @@ async def map_agent_stream(
             for event in _emit_buffered_tool_args(pending_id, "main"):
                 yield event
 
-        state = await agent.aget_state(config)
+        full_response = sanitize_user_facing_text(
+            _strip_trailing_memory_json(full_response)
+        )
+
+        await _run_post_turn_memory(context, input_data, full_response)
+
+        # Interrupt detection — must not fail the whole turn if checkpoint replay
+        # is unhealthy. Bookings may already have succeeded; still emit ``done``.
+        try:
+            state = await agent.aget_state(config)
+        except Exception as exc:
+            logger.error(
+                "[error] aget_state after stream failed (continuing with done): %s",
+                exc,
+                exc_info=True,
+            )
+            state = None
+
         if state and state.interrupts:
             for intr in state.interrupts:
                 for event in _extract_interrupts({"__interrupt__": [intr]}, thread_id):
@@ -968,6 +1038,7 @@ async def map_agent_stream(
 
         _flush_reasoning("main")
         full_response = _strip_trailing_memory_json(full_response)
+        full_response = sanitize_user_facing_text(full_response)
         logger.info("[done|%s] %s", thread_id, full_response)
         yield _sse(StreamDoneEvent(thread_id=thread_id, content=full_response))
 

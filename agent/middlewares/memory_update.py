@@ -1,11 +1,9 @@
 """
 Automatic memory update middleware.
 
-After each Agent reply (aafter_agent hook), automatically extracts
-destination names and query summaries from the conversation and updates
-the user preferences file in StoreBackend.
-
-The Agent does not need to manually maintain recent_destinations / recent_queries — the system handles it.
+After each Agent reply, recent_destinations / recent_queries are updated
+via ``run_memory_update_after_turn`` from the chat/stream layer — **not** inside
+``aafter_agent`` (nested LLM calls during the graph run can corrupt checkpoints).
 
 Usage:
     from agent.middlewares.memory_update import MemoryUpdateMiddleware
@@ -18,7 +16,9 @@ from datetime import datetime, timezone
 from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 
 from agent.logger import logger
 from agent.config import sanitize_store_user_id
@@ -133,13 +133,21 @@ Assistant response summary: {ai_summary}
 Return ONLY a JSON object, no other text:
 {{"destinations": ["PlaceA", "PlaceB"], "query": "brief summary"}}"""
 
+    # Isolate from the parent LangGraph runnable/checkpointer. A nested model
+    # call that inherits the agent config can pollute the messages channel and
+    # later break checkpoint replay (``Message as a sequence must be ...``).
+    isolated = RunnableConfig(
+        tags=[MEMORY_UPDATE_TAG],
+        run_name="memory_entity_extract",
+        callbacks=[],
+        configurable={},
+        metadata={"memory_update_internal": True},
+    )
+    token = var_child_runnable_config.set(isolated)
     try:
         response = await model.ainvoke(
-            prompt,
-            config={
-                "tags": [MEMORY_UPDATE_TAG],
-                "run_name": "memory_entity_extract",
-            },
+            [HumanMessage(content=prompt)],
+            config=isolated,
         )
 
         # Extract JSON from the reply
@@ -162,8 +170,74 @@ Return ONLY a JSON object, no other text:
             }
     except Exception as e:
         logger.warning(f"MemoryUpdateMiddleware: LLM extraction failed, skipping this update \n {e}", exc_info=True)
+    finally:
+        var_child_runnable_config.reset(token)
 
     return {"destinations": [], "query": ""}
+
+
+async def run_memory_update_after_turn(
+    *,
+    store: Any,
+    user_id: str,
+    user_message: str,
+    ai_summary: str,
+    model: BaseChatModel,
+) -> None:
+    """Update preferences store **after** the LangGraph turn (outside checkpoint).
+
+    Must not run nested LLM calls inside ``aafter_agent`` — that can corrupt the
+    messages channel and break the next turn's checkpoint replay.
+    """
+    if not store or not user_id or not user_message:
+        return
+
+    store_user_id = sanitize_store_user_id(user_id)
+    # Reuse travel gate with a minimal message list
+    if _is_meaningful_travel_comm([HumanMessage(content=user_message)]) is None:
+        return
+
+    summary = (ai_summary or "").strip()[:300]
+    extracted = await _extract_entities(model, user_message, summary)
+    destinations = extracted.get("destinations", [])
+    query = extracted.get("query", "")
+    if not destinations and not query:
+        return
+
+    logger.info(
+        f"MemoryUpdateMiddleware (post-turn): user={user_id} (store={store_user_id}), "
+        f"destinations={destinations}, query={query[:50]}"
+    )
+
+    namespace = (store_user_id,)
+    key = f"/{store_user_id}/preferences.md"
+
+    try:
+        item = await store.aget(namespace, key)
+    except Exception as e:
+        item = None
+        logger.warning(f"Cannot get name space from Store: {e}")
+
+    current_lines: list[str] = []
+    if item is not None and hasattr(item, "value"):
+        value = item.value
+        if isinstance(value, dict):
+            content = value.get("content", [])
+            if isinstance(content, list):
+                current_lines = [str(line) for line in content]
+            elif isinstance(content, str):
+                current_lines = content.split("\n")
+        elif isinstance(value, str):
+            current_lines = value.split("\n")
+
+    updated_content = _merge_preferences(current_lines, destinations, query)
+    file_value = _create_file_value(updated_content)
+    await store.aput(namespace, key, file_value)
+
+    logger.info(
+        f"MemoryUpdateMiddleware (post-turn): updated memory for {user_id} "
+        f"(destinations={len(destinations)}, query={'yes' if query else 'no'})"
+    )
 
 
 def _create_file_value(content_str: str) -> dict:
@@ -197,87 +271,12 @@ class MemoryUpdateMiddleware(AgentMiddleware):
     async def aafter_agent(
         self, state: dict[str, Any], runtime: Any
     ) -> dict[str, Any]|None:
-        """Triggered after Agent reply completes: extract entities and update memory."""
-        try:
-            # 1. Get user_id
-            ctx = getattr(runtime, "context", None)
-            if ctx is None:
-                return None
-            user_id = getattr(ctx, "user_id", None)
-            if not user_id:
-                return None
-            store_user_id = sanitize_store_user_id(user_id)
+        """No-op during the graph run.
 
-            # 2. Get message list
-            messages: list[BaseMessage] = state.get("messages", [])
-            if not messages:
-                return None
-
-            # 3. Decide whether an update is needed
-            user_message = _is_meaningful_travel_comm(messages)
-            if user_message is None:
-                return None
-
-            # 4. Extract AI summary
-            ai_summary = _extract_ai_summary(messages)
-
-            # 5. LLM entity extraction for recent destinations
-            extracted = await _extract_entities(self.model, user_message, ai_summary)
-            destinations = extracted.get("destinations", [])
-            query = extracted.get("query", "")
-
-            if not destinations and not query:
-                return None
-
-            logger.info(
-                f"MemoryUpdateMiddleware: user={user_id} (store={store_user_id}), "
-                f"destinations={destinations}, query={query[:50]}"
-            )
-
-            # 6. Read current preferences file from store
-            store = getattr(runtime, "store", None)
-            if store is None:
-                logger.warning("MemoryUpdateMiddleware: runtime.store is unavailable")
-                return None
-
-            namespace = (store_user_id,)
-            key = f"/{store_user_id}/preferences.md"
-
-            try:
-                item = await store.aget(namespace, key)
-            except Exception as e:
-                item = None
-                logger.warning(f"Cannot get name space from Store: {e}")
-
-            # 7. Parse existing content or create defaults
-            current_lines: list[str] = []
-            if item is not None and hasattr(item, "value"):
-                value = item.value
-                if isinstance(value, dict):
-                    content = value.get("content", [])
-                    if isinstance(content, list):
-                        current_lines = [str(line) for line in content]
-                    elif isinstance(content, str):
-                        current_lines = content.split("\n")
-                elif isinstance(value, str):
-                    current_lines = value.split("\n")
-
-            updated_content = _merge_preferences(
-                current_lines, destinations, query
-            )
-
-            # 8. Write back to store
-            file_value = _create_file_value(updated_content)
-            await store.aput(namespace, key, file_value)
-
-            logger.info(
-                f"MemoryUpdateMiddleware: updated memory for {user_id} "
-                f"(destinations={len(destinations)}, query={'yes' if query else 'no'})"
-            )
-
-        except Exception as e:
-            logger.warning(f"MemoryUpdateMiddleware: update failed \n {e}", exc_info=True)
-
+        Entity extraction runs post-turn from ``stream_mapper`` / ``chat_service``
+        via ``run_memory_update_after_turn`` so nested LLM calls cannot corrupt
+        the checkpoint messages channel.
+        """
         return None
 
 
