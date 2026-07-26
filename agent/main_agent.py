@@ -8,9 +8,10 @@ from langchain_core.runnables import RunnableConfig
 from agent.backends.sandbox_setup import setup_sandbox
 from agent.config import SANDBOX_CONFIG, LOCAL_AGENTS_MD, STORE, SKILLS_STORE_NAMESPACE, DOWNLOAD_DIR, SUMMARY_MODEL, \
     MAIN_MODEL, AGENTS_MD_FILENAME, CHECKPOINTER, ANONYMOUS_USER_ID, sanitize_store_user_id
+from agent.harness_setup import register_travel_harness_profiles
 from agent.logger import logger
 from agent.memory.prompts import system_prompt
-from agent.middleware_config import create_sub_agent_middleware
+from agent.middleware_config import create_booking_sub_agent_middleware
 from agent.middlewares.context_injection import ContextInjectionMiddleware
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skills_sync import SkillsSyncMiddleware
@@ -52,6 +53,7 @@ async def create_main_agent(
         Compiled LangGraph StateGraph, callable with .ainvoke() / .astream().
     """
     logger.info("=== Start to build AI travel assistant ===")
+    register_travel_harness_profiles()
 
     # Ensure the async Redis checkpointer indices exist before the graph runs.
     await CHECKPOINTER.setup()
@@ -167,6 +169,9 @@ async def create_main_agent(
     # ---- Phase 6: Load Agent YAML ----
     logger.info("Phase 6/10: Load Agent YAML...")
     raw_configs = load_subagent_configs()
+    for cfg in raw_configs:
+        # Lighter model + harness profile without auto-summarization (see harness_setup).
+        cfg["model"] = SUMMARY_MODEL
     if not raw_configs:
         logger.warning("  No configurations of Sub-Agent found, Agent will run without Sub-Agent")
     else:
@@ -175,13 +180,14 @@ async def create_main_agent(
     # ---- Phase 7: subagents' middleware ----
     logger.info("Phase 7/10: subagents' middleware...")
     extra_middleware = {
-        agent_name: create_sub_agent_middleware()
-        for agent_name in (
-            "car-agent",
-            "flights-agent",
-            "hotels-agent",
-            "activity-agent",
-        )
+        "car-agent": create_booking_sub_agent_middleware(book_tool="car_book"),
+        "flights-agent": create_booking_sub_agent_middleware(
+            book_tool="flights_book"
+        ),
+        "hotels-agent": create_booking_sub_agent_middleware(book_tool="hotels_book"),
+        "activity-agent": create_booking_sub_agent_middleware(
+            book_tool="activity_book"
+        ),
     }
 
     # ---- Phase 8: Interpret tool names ----

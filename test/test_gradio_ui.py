@@ -262,6 +262,30 @@ def test_approval_resume_payload_maps_multiple_interrupt_ids():
     assert value["hotel-intr"] == {"decisions": [{"type": "approve"}]}
 
 
+def test_approval_resume_payload_dedupes_duplicate_interrupt_ids():
+    """Stream mapper used to emit the same interrupt twice; Approve must still work."""
+    dup = {
+        "interrupt_id": "8a29ba5e4390b7c4ddb4f9adf9f7df65",
+        "interrupt_type": "approval",
+        "payload": {
+            "actions": [
+                {
+                    "name": "flights_book",
+                    "args": {
+                        "passenger_id": "3442 587242",
+                        "flight_id": 19280,
+                        "fare_conditions": "Economy",
+                    },
+                }
+            ]
+        },
+    }
+    value = _approval_resume_payload("approve", [dup, dup])
+    assert value == {
+        "8a29ba5e4390b7c4ddb4f9adf9f7df65": {"decisions": [{"type": "approve"}]}
+    }
+
+
 def test_build_interrupt_reply_merges_parallel_approvals():
     reply = _build_interrupt_reply_from_events(
         [

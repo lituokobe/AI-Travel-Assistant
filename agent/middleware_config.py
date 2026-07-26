@@ -49,3 +49,31 @@ def create_sub_agent_middleware() -> list:
         ModelCallLimitMiddleware(run_limit=20),
         ToolCallLimitMiddleware(run_limit=50),
     ]
+
+
+def create_booking_sub_agent_middleware(*, book_tool: str) -> list:
+    """Sub-agent middleware with at most one HITL book call per model turn.
+
+    Parallel ``*_book`` tool calls (e.g. outbound + return flights) corrupt the
+    LangGraph messages checkpoint when each triggers approval. The model must
+    book sequentially across turns.
+    """
+    return [
+        ModelCallLimitMiddleware(run_limit=20),
+        ToolCallLimitMiddleware(run_limit=50),
+        ToolCallLimitMiddleware(
+            tool_name=book_tool,
+            run_limit=1,
+            exit_behavior="continue",
+        ),
+        ToolCallLimitMiddleware(
+            tool_name=book_tool.replace("_book", "_update"),
+            run_limit=1,
+            exit_behavior="continue",
+        ),
+        ToolCallLimitMiddleware(
+            tool_name=book_tool.replace("_book", "_cancel"),
+            run_limit=1,
+            exit_behavior="continue",
+        ),
+    ]

@@ -22,9 +22,10 @@ Re-read if the task says **book** — booking requires explicit flight choice an
 
 1. **Search before book** — `flights_search` until the task explicitly requests booking one named itinerary.
 2. **No duplicate books** — Party size > 1: one `flights_book` per **distinct** flight_id; note headcount in Notes.
-3. **3-hour rule** — Do not book flights departing within 3 hours; filter or warn in summaries.
-4. **passenger_id** — Always the task’s `user_id`; never invent passengers.
-5. **Customer-safe failures** — No SQL, stack traces, or “backend error” in Notes.
+3. **One book per model turn** — Never issue two `flights_book` calls in the same step (parallel outbound + return breaks approval). Book leg 1, then leg 2 on the next step.
+4. **3-hour rule** — Do not book flights departing within 3 hours; filter or warn in summaries.
+5. **passenger_id** — Always the task’s `user_id`; never invent passengers.
+6. **Customer-safe failures** — No SQL, stack traces, or “backend error” in Notes.
 
 ## Step 1 — Extract search window
 

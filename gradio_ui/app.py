@@ -145,13 +145,29 @@ def _approval_resume_value(decision: str, payload: dict[str, Any] | None) -> dic
     return {"decisions": [{"type": decision} for _ in range(n)]}
 
 
+def _dedupe_interrupt_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one row per interrupt_id (stream may historically emit duplicates)."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        iid = str(event.get("interrupt_id") or "").strip()
+        key = iid if iid and iid != "unknown" else f"anon-{len(out)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(event)
+    return out
+
+
 def _pending_interrupts() -> list[dict[str, Any]]:
     raw = _session.get("pending_interrupts") or []
-    return [e for e in raw if isinstance(e, dict)]
+    return _dedupe_interrupt_events([e for e in raw if isinstance(e, dict)])
 
 
 def _set_pending_interrupts(events: list[dict[str, Any]] | None) -> None:
-    _session["pending_interrupts"] = list(events or [])
+    _session["pending_interrupts"] = _dedupe_interrupt_events(list(events or []))
 
 
 def _approval_resume_payload(
@@ -163,20 +179,25 @@ def _approval_resume_payload(
     Multiple pending interrupts require ``{interrupt_id: decisions_payload, ...}``.
     A single interrupt may use the plain decisions payload.
     """
-    events = [e for e in (interrupts or []) if e.get("interrupt_type") == "approval"]
+    events = _dedupe_interrupt_events(
+        [e for e in (interrupts or []) if e.get("interrupt_type") == "approval"]
+    )
     if not events:
         return {"decisions": [{"type": decision}]}
 
     mapped: dict[str, Any] = {}
+    missing_ids = 0
     for event in events:
         iid = str(event.get("interrupt_id") or "").strip()
         value = _approval_resume_value(decision, event.get("payload"))
         if iid and iid != "unknown":
             mapped[iid] = value
+        else:
+            missing_ids += 1
 
     if len(events) > 1:
         # LangGraph requires interrupt ids when more than one is pending
-        if len(mapped) != len(events):
+        if missing_ids or len(mapped) != len(events):
             raise ValueError(
                 "Multiple approvals are pending but some are missing interrupt ids."
             )
@@ -505,9 +526,15 @@ def _stream_turn_into_chat(
         if line and (etype == "plan" or line not in seen):
             if etype != "plan":
                 seen.add(line)
+            # Mid-turn model narration before more tools must not stay as a
+            # chat bubble — drop it; only the final deliverable is kept.
             if final_started:
-                cleaned = _clean_assistant_text(final_text)
-                history = _replace_last_assistant(history, cleaned or final_text)
+                if (
+                    history
+                    and history[-1].get("role") == "assistant"
+                    and "options" not in history[-1]
+                ):
+                    history = history[:-1]
                 final_started = False
                 final_text = ""
                 token_since_yield = 0
@@ -543,7 +570,27 @@ def _stream_turn_into_chat(
         elif etype == "interrupt":
             saw_interrupt = True
             interrupt_events.append(event)
+            interrupt_events = _dedupe_interrupt_events(interrupt_events)
             _set_pending_interrupts(interrupt_events)
+            # Surface Approve/Reject as soon as HITL pauses (don't wait for done)
+            if final_started and not (final_text or "").strip():
+                if (
+                    history
+                    and history[-1].get("role") == "assistant"
+                    and "options" not in history[-1]
+                ):
+                    history = history[:-1]
+                final_started = False
+                final_text = ""
+            # Replace prior HITL option bubble from this turn if we re-merge
+            if (
+                history
+                and history[-1].get("role") == "assistant"
+                and "options" in history[-1]
+            ):
+                history = history[:-1]
+            history = history + [_build_interrupt_reply_from_events(interrupt_events)]
+            yield _ui_pack(history)
 
         elif etype == "error":
             msg = f"Error: {event.get('message', '')}"
@@ -564,9 +611,15 @@ def _stream_turn_into_chat(
             history, _clean_assistant_text(final_text) or final_text
         )
 
-    # Always close interrupts with a real assistant reply (+ Approve/Reject)
+    # Always close interrupts with a real assistant reply (+ Approve/Reject).
+    # Skip if we already attached the HITL bubble when the interrupt arrived.
     if interrupt_events:
-        history = history + [_build_interrupt_reply_from_events(interrupt_events)]
+        if not (
+            history
+            and history[-1].get("role") == "assistant"
+            and "options" in history[-1]
+        ):
+            history = history + [_build_interrupt_reply_from_events(interrupt_events)]
 
     yield _ui_pack(history)
 
@@ -781,6 +834,40 @@ _PROCESS_BUBBLE_CSS = """
 """
 
 
+def _gradio_approve(
+    history: list[dict],
+    user_id: str,
+    username: str,
+    passenger_id: str,
+) -> Iterator[tuple[Any, ...]]:
+    yield from _resume_interrupt(
+        "", history, user_id, username, passenger_id, decision="approve"
+    )
+
+
+def _gradio_reject(
+    history: list[dict],
+    user_id: str,
+    username: str,
+    passenger_id: str,
+) -> Iterator[tuple[Any, ...]]:
+    yield from _resume_interrupt(
+        "", history, user_id, username, passenger_id, decision="reject"
+    )
+
+
+def _gradio_resume_submit(
+    resume_text: str,
+    history: list[dict],
+    user_id: str,
+    username: str,
+    passenger_id: str,
+) -> Iterator[tuple[Any, ...]]:
+    yield from _resume_interrupt(
+        resume_text, history, user_id, username, passenger_id, decision=None
+    )
+
+
 def create_app() -> gr.Blocks:
     with gr.Blocks(title="AI Travel Assistant") as demo:
         gr.Markdown(
@@ -863,24 +950,20 @@ def create_app() -> gr.Blocks:
             outputs=chat_outputs,
         )
 
+        # Module-level generators (not lambdas / nested fns): Gradio must iterate
+        # yields of 5 outputs; returning a generator object counts as 1 value.
         approve_btn.click(
-            lambda h, uid, un, pid: _resume_interrupt(
-                "", h, uid, un, pid, decision="approve"
-            ),
+            _gradio_approve,
             inputs=[chatbot, user_id, username, passenger_id],
             outputs=chat_outputs,
         )
         reject_btn.click(
-            lambda h, uid, un, pid: _resume_interrupt(
-                "", h, uid, un, pid, decision="reject"
-            ),
+            _gradio_reject,
             inputs=[chatbot, user_id, username, passenger_id],
             outputs=chat_outputs,
         )
         resume_btn.click(
-            lambda t, h, uid, un, pid: _resume_interrupt(
-                t, h, uid, un, pid, decision=None
-            ),
+            _gradio_resume_submit,
             inputs=[resume_input, chatbot, user_id, username, passenger_id],
             outputs=chat_outputs,
         )

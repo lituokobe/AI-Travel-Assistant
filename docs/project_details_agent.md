@@ -30,7 +30,7 @@ It will execute following tasks upon starting:
   - `ContextInjectionMiddleware`
   - `SkillsSyncMiddleware`
   - `UserSkillsRestoreMiddleware`
-  - `build_summarization_middleware`
+  - `build_summarization_middleware` — main agent only; exposes `compact_conversation` (on-demand). Automatic DeepAgents summarization is disabled via `register_travel_harness_profiles()` in `agent/harness_setup.py` for checkpoint stability.
   - `MemoryUpdateMiddleware`
   - `ModelCallLimitMiddleware`
   - `ToolCallLimitMiddleware`

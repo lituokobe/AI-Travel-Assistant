@@ -35,6 +35,12 @@ Re-read this file with `read_file` if you are unsure whether to book or only res
    after the user picks one option.
 5. **Party size** — One book per distinct product under this user; state headcount
    in summaries; do not duplicate identical book calls per traveller.
+6. **Human approval (compliance)** — Every mutating tool call requires user HITL
+   approval via the product UI: `*_book`, `*_update`, and `*_cancel` for flights,
+   hotels, cars, and activities. Never bypass approval; never batch multiple
+   mutations in one model step (one book/update/cancel per turn per product).
+   After the user agrees to a change plan in chat, still run each mutation through
+   approval — verbal “go ahead” is not a substitute for Approve/Reject.
 
 ## When to use vs not use
 
@@ -80,11 +86,14 @@ Wait for explicit approval before book/update/cancel.
 
 ## Step 5 — Execute in order
 
-1. Flights: `flights_update` / `flights_cancel` / `flights_book` as needed — finish + HITL
-2. Hotels: `hotels_update` / `hotels_cancel` / `hotels_book`
-3. Car, then activities
+1. Flights: `flights_update` / `flights_cancel` / `flights_book` as needed — **one
+   mutating call per step**; wait for HITL approval and tool result before the next
+2. Hotels: `hotels_update` / `hotels_cancel` / `hotels_book` — same rule
+3. Car, then activities — same rule
 
-After each step, confirm outcome before the next delegation.
+After each step, confirm outcome before the next delegation. Chat consent (“go ahead”)
+authorizes you to **start** the sequence; each `*_book` / `*_update` / `*_cancel` still
+pauses for Approve/Reject in the UI.
 
 ## Step 6 — Close with a refreshed summary
 
@@ -101,6 +110,7 @@ One message: new dates, what was cancelled/changed, what remains to book, and ne
 - One assistant voice; no sub-agents, tools, or internal IDs
 - Use flight numbers, hotel names, activity titles
 - On failure: brief apology + outcome + next step
+- Do not say “change-of-plans workflow” or “package planning process” — say “Let me get started” or “I’ll work through the changes”
 
 ## Example intents
 

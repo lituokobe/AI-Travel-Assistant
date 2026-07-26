@@ -576,6 +576,25 @@ async def map_agent_stream(
     active_subagent: str | None = None
     # Deduplicate skill activation bubbles within one turn
     seen_skills: set[str] = set()
+    interrupt_events_seen: list[StreamInterruptEvent] = []
+
+    def _emit_interrupt_updates(payload: dict[str, Any]) -> list[str]:
+        out: list[str] = []
+        for event in _extract_interrupts(payload, thread_id):
+            if any(
+                e.interrupt_id == event.interrupt_id for e in interrupt_events_seen
+            ):
+                continue
+            interrupt_events_seen.append(event)
+            if isinstance(event, StreamInterruptEvent):
+                logger.info(
+                    "[interrupt|%s] id=%s payload=%s",
+                    event.interrupt_type,
+                    event.interrupt_id,
+                    json.dumps(event.payload, ensure_ascii=False),
+                )
+            out.append(_sse(event))
+        return out
 
     def _flush_reasoning(src: str) -> None:
         if reasoning_buf:
@@ -733,6 +752,11 @@ async def map_agent_stream(
                             )
 
                     if hasattr(msg_chunk, "tool_call_chunks") and msg_chunk.tool_call_chunks:
+                        # Root mid-turn chat text before tools is process noise —
+                        # keep only the last assistant segment for the done bubble.
+                        if is_root_graph and (raw_response or full_response):
+                            raw_response = ""
+                            full_response = ""
                         for tc in msg_chunk.tool_call_chunks:
                             tc_id, name, chunk_args = _normalize_tool_call(tc)
                             if name and tc_id not in pending_tool_calls:
@@ -969,6 +993,10 @@ async def map_agent_stream(
                     source, None, is_root_graph=is_root_graph
                 ):
                     yield switch_sse
+                if isinstance(data, dict):
+                    if "__interrupt__" in data:
+                        for sse in _emit_interrupt_updates(data):
+                            yield sse
                 if not isinstance(data, dict):
                     continue
                 plan_source = (
@@ -983,6 +1011,9 @@ async def map_agent_stream(
                 for _node, update in data.items():
                     if not isinstance(update, dict):
                         continue
+                    if "__interrupt__" in update:
+                        for sse in _emit_interrupt_updates(update):
+                            yield sse
                     todos = update.get("todos")
                     if todos is not None:
                         _flush_reasoning(plan_source)
@@ -1023,22 +1054,22 @@ async def map_agent_stream(
             )
             state = None
 
-        if state and state.interrupts:
+        # Prefer interrupts already streamed from ``updates``. Only fall back to
+        # ``aget_state`` when none were seen — never re-emit the same interrupt
+        # (duplicate SSE breaks Gradio Approve: two pending rows, one id).
+        if not interrupt_events_seen and state and state.interrupts:
+            _flush_reasoning("main")
             for intr in state.interrupts:
-                for event in _extract_interrupts({"__interrupt__": [intr]}, thread_id):
-                    _flush_reasoning("main")
-                    if isinstance(event, StreamInterruptEvent):
-                        logger.info(
-                            "[interrupt|%s] id=%s payload=%s",
-                            event.interrupt_type,
-                            event.interrupt_id,
-                            json.dumps(event.payload, ensure_ascii=False),
-                        )
-                    yield _sse(event)
+                for sse in _emit_interrupt_updates({"__interrupt__": [intr]}):
+                    yield sse
 
         _flush_reasoning("main")
         full_response = _strip_trailing_memory_json(full_response)
         full_response = sanitize_user_facing_text(full_response)
+        if interrupt_events_seen and not full_response.strip():
+            full_response = (
+                "I've prepared this change and need your confirmation before I continue."
+            )
         logger.info("[done|%s] %s", thread_id, full_response)
         yield _sse(StreamDoneEvent(thread_id=thread_id, content=full_response))
 

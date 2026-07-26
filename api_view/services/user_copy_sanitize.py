@@ -27,6 +27,17 @@ _PHRASE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
+            r"\blet me follow the change-of-plans workflow\.?",
+            re.IGNORECASE,
+        ),
+        "Let me get started.",
+    ),
+    (
+        re.compile(r"\bchange-of-plans workflow\b", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(
             r"\blet me follow the package planning process\.?",
             re.IGNORECASE,
         ),
@@ -50,6 +61,71 @@ _PHRASE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
         ),
         "",
     ),
+    # Skill / playbook leaks (full sentences when possible)
+    (
+        re.compile(
+            r"[^.?!]*\b(?:check(?:ing)?|load(?:ing|ed)?|read(?:ing)?)\s+"
+            r"(?:the\s+)?(?:package\s+)?skills?\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"[^.?!]*\b(?:flight|hotel|package)\s+skills?\s+"
+            r"(?:loaded|ready)\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(r"\b(?:package|flight|hotel)\s+skills?\b", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(
+            r"[^.?!]*\bskills?\s+loaded\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    # Mid-research filler sentences
+    (
+        re.compile(
+            r"[^.?!]*\bi have what i need\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"[^.?!]*\blet me set up the plan\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"[^.?!]*\bgood progress\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"[^.?!]*\bwhile i wait for your input\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"[^.?!]*\blet me start (?:the\s+)?(?:flight\s+)?search "
+            r"while you think\b[^.?!]*[.?!]\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
 ]
 
 # Collapse awkward gaps after removals.
@@ -66,6 +142,8 @@ def sanitize_user_facing_text(text: str) -> str:
         out = pattern.sub(repl, out)
     out = _MULTI_SPACE.sub(" ", out)
     out = _MULTI_NEWLINE.sub("\n\n", out)
+    # After sentence removals, restore ".Next" → ". Next"
+    out = re.sub(r"\.([A-Za-z])", r". \1", out)
     # Join accidental duplicate sentences when removal left "Let me ...Let me"
     out = re.sub(
         r"(Let me get started\.)\s*\1+",
