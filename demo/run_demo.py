@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import signal
 import subprocess
@@ -120,6 +121,15 @@ def main() -> None:
         _log("")
         if not redis_ok:
             sys.exit(1)
+
+    if mongo_ok:
+        from api_view.preference_seed import ensure_preference_seeds
+
+        _log("Ensuring user preference seeds...")
+        try:
+            asyncio.run(ensure_preference_seeds())
+        except Exception as exc:  # noqa: BLE001  # never block startup on seeding
+            _log(f"Preference seeding skipped: {exc}")
 
     mcp_proc = _start_process("mcp", [PYTHON, "-m", "mcp_server.server_main"])
     if not _wait_for_port("127.0.0.1", 8000, timeout=30, label="MCP server"):
