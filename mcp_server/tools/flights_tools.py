@@ -7,6 +7,10 @@ from data.data_base import db
 
 GROUP_NAME = "flights"
 
+# Fallback per-class fare (EUR) when a flight has no ticket history yet.
+# Derived from the seeded averages after the RMB -> EUR (/10) conversion.
+FARE_DEFAULTS = {"Economy": 1600, "Comfort": 3274, "Business": 5114}
+
 
 def register_flights_tools(mcp: FastMCP):
     """Register all the tools for flights management"""
@@ -33,7 +37,8 @@ def register_flights_tools(mcp: FastMCP):
             t.ticket_no, t.book_ref,
             f.flight_id, f.flight_no, f.departure_airport, f.arrival_airport,
             f.scheduled_departure, f.scheduled_arrival,
-            bp.seat_no, tf.fare_conditions
+            bp.seat_no, tf.fare_conditions,
+            tf.amount AS price, tf.currency
         FROM 
             tickets t
             JOIN ticket_flights tf ON t.ticket_no = tf.ticket_no
@@ -77,7 +82,13 @@ def register_flights_tools(mcp: FastMCP):
         conn = connect(db)
         cursor = conn.cursor()
 
-        query = "SELECT * FROM flights WHERE 1 = 1"
+        query = (
+            "SELECT *, "
+            "(SELECT MIN(amount) FROM ticket_flights "
+            "WHERE flight_id = flights.flight_id) AS price, "
+            "'EUR' AS currency "
+            "FROM flights WHERE 1 = 1"
+        )
         params = []
 
         if departure_airport:
@@ -164,12 +175,25 @@ def register_flights_tools(mcp: FastMCP):
                 f"The departure time is {departure_time}."
             )
 
+        # Price the fare in EUR from existing tickets on this flight/class;
+        # fall back to a fare-class default when the flight has no history yet.
+        price_row = cursor.execute(
+            "SELECT MIN(amount) FROM ticket_flights "
+            "WHERE flight_id = ? AND fare_conditions = ?",
+            (flight_id, fare_conditions),
+        ).fetchone()
+        price = (
+            price_row[0]
+            if price_row and price_row[0] is not None
+            else FARE_DEFAULTS.get(fare_conditions, 0)
+        )
+
         ticket_no = f"{secrets.randbelow(10**16):016d}"
         book_ref = secrets.token_hex(3).upper()
 
         cursor.execute(
             "INSERT INTO bookings (book_ref, book_date, total_amount) VALUES (?, ?, ?)",
-            (book_ref, datetime.now(tz=timezone).isoformat(), 0),
+            (book_ref, datetime.now(tz=timezone).isoformat(), price),
         )
         cursor.execute(
             "INSERT INTO tickets (ticket_no, book_ref, passenger_id) VALUES (?, ?, ?)",
@@ -177,10 +201,10 @@ def register_flights_tools(mcp: FastMCP):
         )
         cursor.execute(
             """
-            INSERT INTO ticket_flights (ticket_no, flight_id, fare_conditions, amount)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO ticket_flights (ticket_no, flight_id, fare_conditions, amount, currency)
+            VALUES (?, ?, ?, ?, 'EUR')
             """,
-            (ticket_no, flight_id, fare_conditions, 0),
+            (ticket_no, flight_id, fare_conditions, price),
         )
         conn.commit()
         cursor.close()
@@ -189,7 +213,8 @@ def register_flights_tools(mcp: FastMCP):
         return (
             f"Flight booked successfully. ticket_no={ticket_no}, "
             f"book_ref={book_ref}, flight_id={flight_id}, "
-            f"passenger_id={passenger_id}, fare_conditions={fare_conditions}."
+            f"passenger_id={passenger_id}, fare_conditions={fare_conditions}, "
+            f"price={price} EUR."
         )
 
     @mcp.tool(name=f"{GROUP_NAME}_update")

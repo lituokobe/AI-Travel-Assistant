@@ -74,7 +74,9 @@ def register_activity_tools(mcp: FastMCP):
                 t.name,
                 t.location,
                 t.keywords,
-                t.details AS catalog_details
+                t.details AS catalog_details,
+                t.price,
+                t.currency
             FROM activity_reservations r
             JOIN {CATALOG_TABLE} t ON t.id = r.recommendation_id
             WHERE r.user_id = ? AND r.status = 'booked'
@@ -106,11 +108,14 @@ def register_activity_tools(mcp: FastMCP):
         conn = connect(db)
         cursor = conn.cursor()
         cursor.execute(
-            f"SELECT id FROM {CATALOG_TABLE} WHERE id = ?", (recommendation_id,)
+            f"SELECT id, price, currency FROM {CATALOG_TABLE} WHERE id = ?",
+            (recommendation_id,),
         )
-        if not cursor.fetchone():
+        activity = cursor.fetchone()
+        if not activity:
             conn.close()
             return f"Cannot find recommended activity {recommendation_id}"
+        price, currency = activity[1], activity[2] or "EUR"
 
         cursor.execute(
             """
@@ -126,7 +131,7 @@ def register_activity_tools(mcp: FastMCP):
         return (
             f"Activity reservation created successfully. "
             f"reservation_id={reservation_id}, recommendation_id={recommendation_id}, "
-            f"user_id={user_id}."
+            f"user_id={user_id}, price={price} {currency}."
         )
 
     @mcp.tool(name=f"{GROUP_NAME}_update")

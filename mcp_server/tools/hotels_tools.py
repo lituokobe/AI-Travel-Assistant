@@ -70,7 +70,9 @@ def register_hotels_tools(mcp: FastMCP):
                 r.status,
                 h.name,
                 h.location,
-                h.price_tier
+                h.price_tier,
+                h.price,
+                h.currency
             FROM hotel_reservations r
             JOIN hotels h ON h.id = r.hotel_id
             WHERE r.user_id = ? AND r.status = 'booked'
@@ -106,10 +108,14 @@ def register_hotels_tools(mcp: FastMCP):
         conn = connect(db)
         cursor = conn.cursor()
 
-        cursor.execute("SELECT id FROM hotels WHERE id = ?", (hotel_id,))
-        if not cursor.fetchone():
+        cursor.execute(
+            "SELECT id, price, currency FROM hotels WHERE id = ?", (hotel_id,)
+        )
+        hotel = cursor.fetchone()
+        if not hotel:
             conn.close()
             return f"Cannot find hotel with ID {hotel_id}."
+        price, currency = hotel[1], hotel[2] or "EUR"
 
         cursor.execute(
             """
@@ -124,7 +130,8 @@ def register_hotels_tools(mcp: FastMCP):
         conn.close()
         return (
             f"Hotel reservation created successfully. "
-            f"reservation_id={reservation_id}, hotel_id={hotel_id}, user_id={user_id}."
+            f"reservation_id={reservation_id}, hotel_id={hotel_id}, user_id={user_id}, "
+            f"price={price} {currency} per night."
         )
 
     @mcp.tool(name=f"{GROUP_NAME}_update")

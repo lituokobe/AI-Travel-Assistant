@@ -67,7 +67,9 @@ def register_car_tools(mcp: FastMCP):
                 r.status,
                 c.name,
                 c.location,
-                c.price_tier
+                c.price_tier,
+                c.price,
+                c.currency
             FROM car_reservations r
             JOIN car_rentals c ON c.id = r.rental_id
             WHERE r.user_id = ? AND r.status = 'booked'
@@ -99,10 +101,14 @@ def register_car_tools(mcp: FastMCP):
 
         conn = connect(db)
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM car_rentals WHERE id = ?", (rental_id,))
-        if not cursor.fetchone():
+        cursor.execute(
+            "SELECT id, price, currency FROM car_rentals WHERE id = ?", (rental_id,)
+        )
+        rental = cursor.fetchone()
+        if not rental:
             conn.close()
             return f"Cannot find car rental {rental_id}"
+        price, currency = rental[1], rental[2] or "EUR"
 
         cursor.execute(
             """
@@ -117,7 +123,8 @@ def register_car_tools(mcp: FastMCP):
         conn.close()
         return (
             f"Car reservation created successfully. "
-            f"reservation_id={reservation_id}, rental_id={rental_id}, user_id={user_id}."
+            f"reservation_id={reservation_id}, rental_id={rental_id}, user_id={user_id}, "
+            f"price={price} {currency} per day."
         )
 
     @mcp.tool(name=f"{GROUP_NAME}_update")
