@@ -109,6 +109,7 @@ system_prompt: |
   - Flight ID / Flight No: (if applicable)
   - Departure / Arrival: (if applicable)
   - Scheduled Departure: (if applicable)
+  - Price / Booking Total: (fare + currency from search/book results; EUR. Surface it when booking or when the user asks about cost)
 
   [Notes]
   ```

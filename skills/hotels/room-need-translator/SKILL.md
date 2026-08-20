@@ -44,7 +44,7 @@ Do **not** repeat `hotels_book` per adult.
 
 ## Step 4 — Communicate limits honestly
 
-If search only shows `price_tier`:
+If search doesn't expose a specific room SKU:
 - “Exact room configuration isn’t in search; I’ve noted your party size for the property.”
 
 ## Integration

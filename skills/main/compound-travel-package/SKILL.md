@@ -34,7 +34,7 @@ Re-read this file with `read_file` if you are unsure whether booking is allowed 
 2. **One hotel per package / one booking after choice** — A package contains at most
    one hotel recommendation. After the user picks a package, book **that** hotel only
    (plus matching flights / car if included). Never book 2+ hotels in the same turn.
-3. **No probe-booking** — Catalog search may only return `price_tier` / coarse prices.
+3. **No probe-booking** — Catalog search returns price + currency (EUR); use those for comparison, never book to discover pricing.
    Report that honestly. **Never** call `hotels_book` / `car_book` / `flights_book`
    “just to discover pricing.” Booking is a customer commitment, not a price lookup.
 4. **No multi-book for comparison** — Do not book Option A, B, and C in parallel to
@@ -66,7 +66,7 @@ budget for hotel (+ car if needed). Summarize a shortlist of viable round-trips
 
 ## Step 3 — Hotels aligned to flight windows
 
-For the best flight date windows only, search hotels (several tiers if possible).
+For the best flight date windows only, search hotels across price points if possible.
 Align check-in/out to those flights. Do **not** book.
 
 ## Step 4 — Optional cars / activities
@@ -76,10 +76,10 @@ Add only if asked or clearly needed. Search only; do not book yet.
 ## Step 5 — Build 2–4 packages (mandatory user-facing deliverable)
 
 Create **Package A / B / C** (and D if useful). Each package must include:
-- Flights summary (route, dates/times, rough cost if known)
-- Hotel summary (name/area, nights, price tier or rough cost)
+- Flights summary (route, dates/times, price EUR if known)
+- Hotel summary (name/area, nights, price EUR/night)
 - Optional car/activity lines
-- **Estimated total** in the user’s currency (or clear “tier only” caveat)
+- **Estimated total** in EUR (sum of flight fares + hotel × nights + car/day + activity fees from search)
 - One-line trade-off ("cheapest", "best times", "nicer hotel")
 
 Rules:
@@ -135,7 +135,7 @@ Do **not** stream status lines between tool calls (“I have what I need”, “
 - Never say "search tools" or expose internal catalog IDs — use hotel/activity/car **names** and flight **numbers**
 - Never say "package planning process", "follow the playbook", or similar — use "Let me get started" / "I'll pull together a few options"
 - Never quote `price_sensitivity` or low/medium/high to the user — rank silently or "based on your previous trips"
-- If exact rates are missing: "Exact rates weren't available from the search; only price tiers are."
+- If a specific item's rate is missing from search: "That option's exact rate wasn't in the search results; I can look into alternatives."
 - On failures: brief apology + outcome + next step
 - Never quote SQL, stack traces, or "backend error"
 - Match `communication_style` while staying professional

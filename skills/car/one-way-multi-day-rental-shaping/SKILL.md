@@ -40,12 +40,12 @@ State **inclusive day count** in summary.
 
 `car_search` by location/name near pickup point (airport city or hotel area).
 
-Rank by `price_tier` vs `price_sensitivity`.
+Rank by price (EUR/day) vs `price_sensitivity`.
 
 ## Step 4 — Present
 
 2–4 options with:
-- Company name / location / tier
+- Company name / location / price (EUR/day)
 - Proposed start_date → end_date
 - Why window fits flights
 

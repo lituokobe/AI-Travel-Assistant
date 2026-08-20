@@ -19,8 +19,8 @@ Help the user **choose where to go** before locking flights or hotels.
 
 ## Hard stops (never violate)
 
-1. **No booking** — Do not call sub-agent book tools; at most light catalog **search** if the user asks “can we afford either?” and you need tier signals — still no `*_book`.
-2. **No fabricated prices** — Use preference currency, budget band, and honest “tier only” language from search if used.
+1. **No booking** — Do not call sub-agent book tools; at most light catalog **search** if the user asks “can we afford either?” and you need cost signals — still no `*_book`.
+2. **No fabricated prices** — Use the price + currency (EUR) from search results and the user's budget band from preferences.
 3. **Personalize** — Always apply `preferred_travel_types`, `price_sensitivity`, `special_preferences`, party size.
 4. **Decisive finish** — End with a clear recommendation and one question (“Which should I plan in detail?”).
 
@@ -38,7 +38,7 @@ Score each destination on dimensions the user cares about, e.g.:
 - Weather / season fit (web_search)
 - Flight distance and rough convenience from `base_city` (qualitative; delegate flight **search** only if user wants a concrete sample itinerary)
 - Family / food / safety / pace fit from preferences
-- Relative cost band (search + honesty about uncertainty)
+- Relative cost (price + currency from catalog search when available)
 
 ## Step 3 — Research (`web_search`)
 
@@ -71,7 +71,7 @@ When they pick a winner → switch to `compound-travel-package` or targeted dele
 
 - Neutral, helpful tone; no winner-takes-all unless user asked for a single pick
 - No internal architecture or catalog IDs
-- Say when data is indicative, not quoted fares
+- Distinguish catalog search prices (quoted EUR) from web_search estimates (indicative)
 
 ## Example intents
 

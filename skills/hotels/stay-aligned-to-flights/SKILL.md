@@ -14,7 +14,7 @@ Hotel dates must **follow the flight anchor**, not arbitrary calendar defaults.
 ## Hard stops (never violate)
 
 1. **Check-out after check-in** — Validate date order before `hotels_book` / `hotels_update`.
-2. **No probe-booking** — Search tiers only until one hotel is chosen.
+2. **No probe-booking** — Search and compare options until one hotel is chosen.
 3. **One hotel book per decision** — No multi-hotel comparison via booking.
 4. **user_id** on all fetch/book/update/cancel calls.
 
@@ -44,7 +44,7 @@ If stay length changes (user changes flights), re-run search — do not book old
 ## Step 4 — Present options (research tasks)
 
 For each candidate hotel:
-- Name / area / price tier
+- Name / area / price (EUR/night)
 - Check-in → check-out (nights)
 - One line on proximity or preference fit
 

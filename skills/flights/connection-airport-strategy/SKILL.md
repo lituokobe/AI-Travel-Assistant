@@ -46,7 +46,7 @@ Label each viable strategy:
 ## Step 4 — Recommend 2–3 strategies
 
 For each:
-- Why it helps (price tier, schedule, availability)
+- Why it helps (price EUR, schedule, availability)
 - Trade-offs (early start, late arrival, ground segment)
 - Sample flights from search
 

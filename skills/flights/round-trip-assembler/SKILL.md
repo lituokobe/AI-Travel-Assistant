@@ -47,7 +47,7 @@ Use `limit` responsibly; widen window once before giving up.
 Pair legs by:
 - **Date feasibility** — return after outbound arrival (same day only if connection time realistic)
 - **Total time burden** — avoid brutal layovers unless no options
-- **Price tier** — when only tiers exist, rank “lighter” combinations for `price_sensitivity: low`
+- **Price (EUR)** — rank by fare from search results for `price_sensitivity: low`
 
 Drop impossible pairs (return before outbound lands).
 

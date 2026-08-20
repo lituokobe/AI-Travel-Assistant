@@ -14,7 +14,7 @@ Optimize **when** to fly inside a window without asking the user to guess each d
 ## Hard stops (never violate)
 
 1. **Search only** unless the task explicitly names book + chosen dates.
-2. **Honest pricing** — If search exposes only schedules/tiers, say so; never probe-book.
+2. **Honest pricing** — Quote the price + currency (EUR) returned by search; never probe-book.
 3. **Bounded window** — Default ±3 days or the task’s stated range; do not exhaust infinite calendars.
 4. **passenger_id = user_id** on any book; party size in Notes only.
 
@@ -37,7 +37,7 @@ Do not exceed ~6–8 search calls without summarizing partial results.
 
 Score by:
 - Schedule quality (red-eye penalty if `special_preferences` imply it)
-- Tier / qualitative cost vs `price_sensitivity`
+- Price (EUR) vs `price_sensitivity`
 - Alignment with hotel/car needs if stated in task (“need Friday night arrival”)
 
 ## Step 4 — Deliverable
@@ -47,7 +47,7 @@ Present **top 3 date combinations** (not 20 rows):
 | Rank | Outbound date | Return date | Highlight |
 |------|---------------|-------------|-----------|
 | 1 | … | … | Best balance |
-| 2 | … | … | Cheapest tier signal |
+| 2 | … | … | Cheapest fare |
 | 3 | … | … | Best times |
 
 Each row: sample flight numbers/times from search (real rows only).

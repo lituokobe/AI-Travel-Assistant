@@ -38,11 +38,13 @@ def register_flights_tools(mcp: FastMCP):
             f.flight_id, f.flight_no, f.departure_airport, f.arrival_airport,
             f.scheduled_departure, f.scheduled_arrival,
             bp.seat_no, tf.fare_conditions,
-            tf.amount AS price, tf.currency
+            tf.amount AS price, tf.currency,
+            b.total_amount AS booking_total, b.currency AS booking_currency
         FROM 
             tickets t
             JOIN ticket_flights tf ON t.ticket_no = tf.ticket_no
             JOIN flights f ON tf.flight_id = f.flight_id
+            LEFT JOIN bookings b ON b.book_ref = t.book_ref
             LEFT JOIN boarding_passes bp
                 ON bp.ticket_no = t.ticket_no AND bp.flight_id = f.flight_id
         WHERE 
@@ -192,7 +194,8 @@ def register_flights_tools(mcp: FastMCP):
         book_ref = secrets.token_hex(3).upper()
 
         cursor.execute(
-            "INSERT INTO bookings (book_ref, book_date, total_amount) VALUES (?, ?, ?)",
+            "INSERT INTO bookings (book_ref, book_date, total_amount, currency) "
+            "VALUES (?, ?, ?, 'EUR')",
             (book_ref, datetime.now(tz=timezone).isoformat(), price),
         )
         cursor.execute(

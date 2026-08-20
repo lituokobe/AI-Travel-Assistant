@@ -9,7 +9,7 @@ from typing import Any
 
 import gradio as gr
 
-from api_view.config import DEFAULT_PASSENGER_ID, DEFAULT_USER_ID, DEFAULT_USERNAME, GRADIO_HOST, GRADIO_PORT
+from api_view.config import DEFAULT_USER_ID, DEFAULT_USERNAME, GRADIO_HOST, GRADIO_PORT
 from api_view.services.catalog_display import (
     collapse_approval_actions,
     format_approval_arg_lines,
@@ -444,19 +444,16 @@ def _process_chat_message(body: str) -> dict[str, Any]:
     }
 
 
-def _session_status() -> str:
-    status = f"Thread: {_session.get('thread_id') or 'new'}"
+def _interrupt_status() -> str:
+    """Status string for pending interrupts (thread is shown in User & Session)."""
     pending = _pending_interrupts()
-    if pending:
-        types = {e.get("interrupt_type") for e in pending}
-        if "approval" in types:
-            n = len(_collect_approval_actions(pending))
-            status += (
-                f" | ⚠️ Waiting for Approve / Reject ({n} change{'s' if n != 1 else ''})"
-            )
-        else:
-            status += " | ⚠️ Waiting for your input"
-    return status
+    if not pending:
+        return ""
+    types = {e.get("interrupt_type") for e in pending}
+    if "approval" in types:
+        n = len(_collect_approval_actions(pending))
+        return f"⚠️ Waiting for Approve / Reject ({n} change{'s' if n != 1 else ''})"
+    return "⚠️ Waiting for your input"
 
 
 def _hitl_visibility() -> tuple[Any, Any]:
@@ -472,10 +469,17 @@ def _ui_pack(
     *,
     clear_msg: bool = True,
 ) -> tuple[Any, ...]:
-    """Standard outputs: chatbot, status, msg, approval_row, info_row."""
+    """Standard outputs: chatbot, thread, status, msg, approval_row, info_row."""
     approval_vis, info_vis = _hitl_visibility()
     msg_out: Any = "" if clear_msg else gr.update()
-    return history, _session_status(), msg_out, approval_vis, info_vis
+    return (
+        history,
+        _session.get("thread_id") or "new",
+        _interrupt_status(),
+        msg_out,
+        approval_vis,
+        info_vis,
+    )
 
 
 def _replace_last_assistant(history: list[dict], content: str) -> list[dict]:
@@ -677,7 +681,7 @@ def _resume_interrupt(
     thread_id = _session.get("thread_id")
     history = _strip_options(list(history or []))
     if not thread_id:
-        yield history, "No active thread", gr.update(), *_hitl_visibility()
+        yield history, gr.update(), "No active thread", gr.update(), *_hitl_visibility()
         return
 
     interrupts = _pending_interrupts()
@@ -690,6 +694,7 @@ def _resume_interrupt(
         if decision not in ("approve", "reject"):
             yield (
                 history,
+                gr.update(),
                 "Use Approve or Reject for this action.",
                 gr.update(),
                 *_hitl_visibility(),
@@ -700,6 +705,7 @@ def _resume_interrupt(
         except ValueError as exc:
             yield (
                 history,
+                gr.update(),
                 str(exc),
                 gr.update(),
                 *_hitl_visibility(),
@@ -710,6 +716,7 @@ def _resume_interrupt(
         if not (resume_text or "").strip():
             yield (
                 history,
+                gr.update(),
                 "Enter the missing travel details to resume.",
                 gr.update(),
                 *_hitl_visibility(),
@@ -771,23 +778,7 @@ def _on_option_select(
 def _new_conversation() -> tuple[Any, ...]:
     _session["thread_id"] = None
     _set_pending_interrupts([])
-    return [], "New conversation started", "", *_hitl_visibility()
-
-
-def _check_agent_status() -> str:
-    try:
-        status = client.agent_status()
-        return json.dumps(status, indent=2)
-    except Exception as exc:
-        return f"API unreachable: {exc}\n\nStart the API with: python -m api_view.run"
-
-
-def _init_agent() -> str:
-    try:
-        result = client.initialize_agent()
-        return json.dumps(result, indent=2)
-    except Exception as exc:
-        return f"Init failed: {exc}"
+    return [], "new", "", "", *_hitl_visibility()
 
 
 # Muted styling for process/thought bubbles only — final replies keep Gradio defaults
@@ -887,12 +878,13 @@ def create_app() -> gr.Blocks:
         msg = gr.Textbox(
             label="Your message",
             placeholder="e.g. Book a hotel in Paris between 26 and 28 July",
-            lines=2,
+            lines=1,
+            max_lines=8,
         )
         with gr.Row():
             send_btn = gr.Button("Send", variant="primary")
             new_btn = gr.Button("New Conversation")
-        status_bar = gr.Textbox(label="Session", interactive=False)
+        status_bar = gr.Textbox(label="Status", interactive=False)
 
         with gr.Group(visible=False, elem_id="hitl-approval-bar") as approval_row:
             gr.Markdown(
@@ -913,62 +905,49 @@ def create_app() -> gr.Blocks:
             )
             resume_btn = gr.Button("Resume with text", variant="secondary")
 
-        with gr.Accordion("Agent Lifecycle", open=False):
-            agent_status = gr.Textbox(label="Agent Status", lines=4, interactive=False)
-            with gr.Row():
-                status_btn = gr.Button("Check Status")
-                init_btn = gr.Button("Initialize Agent", variant="secondary")
-
-        with gr.Accordion("User Settings", open=False):
+        with gr.Accordion("User & Session", open=False):
             with gr.Row():
                 user_id = gr.Textbox(label="User ID", value=DEFAULT_USER_ID)
                 username = gr.Textbox(label="Username", value=DEFAULT_USERNAME)
-                passenger_id = gr.Textbox(
-                    label="Passenger ID (= User ID for flights)",
-                    value=DEFAULT_PASSENGER_ID,
-                )
+            thread = gr.Textbox(label="Thread", value="new", interactive=False)
 
-        chat_outputs = [chatbot, status_bar, msg, approval_row, info_row]
+        chat_outputs = [chatbot, thread, status_bar, msg, approval_row, info_row]
 
         send_btn.click(
             _process_stream_events,
-            inputs=[msg, chatbot, user_id, username, passenger_id],
+            inputs=[msg, chatbot, user_id, username, user_id],
             outputs=chat_outputs,
         )
         msg.submit(
             _process_stream_events,
-            inputs=[msg, chatbot, user_id, username, passenger_id],
+            inputs=[msg, chatbot, user_id, username, user_id],
             outputs=chat_outputs,
         )
         new_btn.click(_new_conversation, outputs=chat_outputs)
-        status_btn.click(_check_agent_status, outputs=[agent_status])
-        init_btn.click(_init_agent, outputs=[agent_status])
 
         chatbot.option_select(
             _on_option_select,
-            inputs=[chatbot, user_id, username, passenger_id],
+            inputs=[chatbot, user_id, username, user_id],
             outputs=chat_outputs,
         )
 
         # Module-level generators (not lambdas / nested fns): Gradio must iterate
-        # yields of 5 outputs; returning a generator object counts as 1 value.
+        # yields of 6 outputs; returning a generator object counts as 1 value.
         approve_btn.click(
             _gradio_approve,
-            inputs=[chatbot, user_id, username, passenger_id],
+            inputs=[chatbot, user_id, username, user_id],
             outputs=chat_outputs,
         )
         reject_btn.click(
             _gradio_reject,
-            inputs=[chatbot, user_id, username, passenger_id],
+            inputs=[chatbot, user_id, username, user_id],
             outputs=chat_outputs,
         )
         resume_btn.click(
             _gradio_resume_submit,
-            inputs=[resume_input, chatbot, user_id, username, passenger_id],
+            inputs=[resume_input, chatbot, user_id, username, user_id],
             outputs=chat_outputs,
         )
-
-        demo.load(_check_agent_status, outputs=[agent_status])
 
     return demo
 
