@@ -83,54 +83,26 @@ async def create_main_agent(
     logger.info(f"🔍 DEBUG: STORE type={type(STORE)}, sandbox_id={sandbox_id}")
 
     def _memories_namespace(rt):
-        # deepagents 0.7+: rt is Runtime with .context; older path used rt.runtime.context
-        ctx = getattr(rt, "context", None)
-        if ctx is None:
-            nested = getattr(rt, "runtime", None)
-            ctx = getattr(nested, "context", None) if nested is not None else None
-        raw_user_id = getattr(ctx, "user_id", ANONYMOUS_USER_ID) if ctx is not None else ANONYMOUS_USER_ID
+        raw_user_id = getattr(rt.context, "user_id", ANONYMOUS_USER_ID)
         return (sanitize_store_user_id(raw_user_id),)
 
-    backend = lambda rt: CompositeBackend(
+    # Pre-constructed backend instance (not a factory) — deepagents >=0.5.0
+    # recommends passing instances directly; the deprecated factory pattern and
+    # the ``runtime=`` argument on StoreBackend are removed in 0.7.0.
+    # StoreBackend resolves the store at call time via get_store(), which works
+    # because create_deep_agent(store=STORE) sets it up in the graph context.
+    backend = CompositeBackend(
         default=sandbox_backend,
         routes={
             "/memories/": StoreBackend(
-                runtime=rt,
                 namespace=_memories_namespace,
             ),
             "/persisted-skills/": StoreBackend(
-                runtime=rt,
-                namespace=lambda rt: SKILLS_STORE_NAMESPACE,
+                namespace=lambda _rt: SKILLS_STORE_NAMESPACE,
             ),
         },
     )
-
-    # 🔍 TEMP: Test the backend creation immediately
-    """
-    type() is to class what lambda is to def
-    Both are the low-level, dynamic, programmatic ways to create Python objects — while class/def are the high-level, readable, declarative syntax sugar.
-    """
-    try:
-        test_rt = type(
-            'MockRuntime',
-            (),
-            {
-                'runtime': type(
-                    'MockCtx',
-                    (),
-                    {'context': type(
-                        'MockUser',
-                        (),
-                        {'user_id': 'test'}
-                    )()
-                     })()
-            }
-        )()
-        test_backend = backend(test_rt)
-        logger.info(f"✅ CompositeBackend created successfully: {test_backend}")
-    except Exception as e:
-        logger.error(f"❌ CompositeBackend creation failed: {e}", exc_info=True)
-        raise
+    logger.info(f"✅ CompositeBackend created successfully: {backend}")
 
     # ---- Phase 4: Load MCP tools ----
     logger.info("Phase 4/10: Load MCP tools...")

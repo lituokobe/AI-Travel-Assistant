@@ -7,6 +7,8 @@ Provides factory functions for standard middleware, injected when creating agent
 from deepagents.middleware.summarization import (
     create_summarization_tool_middleware,
 )
+
+from agent.middlewares.tools_summarization import _COMPACT_CONVERSATION_NUDGE
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
@@ -30,7 +32,9 @@ def create_main_agent_middleware(model, backend) -> list:
         List of middleware instances
     """
     return [
-        create_summarization_tool_middleware(model, backend),
+        create_summarization_tool_middleware(
+            model, backend, system_prompt=_COMPACT_CONVERSATION_NUDGE,
+        ),
         ModelCallLimitMiddleware(run_limit=50),
         ToolCallLimitMiddleware(run_limit=200),
     ]

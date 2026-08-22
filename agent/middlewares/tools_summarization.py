@@ -31,6 +31,19 @@ from deepagents.middleware.summarization import (
     create_summarization_tool_middleware,
 )
 
+# deepagents 0.7.0 removed the built-in ``SUMMARIZATION_SYSTEM_PROMPT`` constant
+# and changed the ``system_prompt`` default on ``create_summarization_tool_middleware``
+# to ``None`` (no prose injected).  We define the nudge locally to preserve the
+# same behaviour the project had on 0.6.x.
+_COMPACT_CONVERSATION_NUDGE = """## Compact conversation Tool `compact_conversation`
+
+You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
+
+You should use the tool when:
+- The user asks to move on to a completely new task for which previous context is likely irrelevant.
+- You have finished extracting or synthesizing a result and previous working context is no longer needed.
+"""
+
 
 def build_summarization_middleware(
     backend: CompositeBackend,
@@ -56,4 +69,8 @@ def build_summarization_middleware(
         Tuning requires passing custom args through ``create_summarization_tool_middleware``
         if product needs stricter gates later.
     """
-    return create_summarization_tool_middleware(model=model, backend=backend)
+    return create_summarization_tool_middleware(
+        model=model,
+        backend=backend,
+        system_prompt=_COMPACT_CONVERSATION_NUDGE,
+    )
