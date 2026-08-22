@@ -452,6 +452,12 @@ def _process_chat_message(body: str) -> dict[str, Any]:
 def _friendly_error_message(raw: str) -> str:
     """Convert raw infrastructure errors to customer-friendly text."""
     raw_lower = (raw or "").lower()
+    if "internal state error" in raw_lower or "corrupted state" in raw_lower:
+        return (
+            "I encountered an internal state error in this conversation. "
+            "I've cleared the corrupted state — please send your message "
+            "again to continue with a fresh conversation."
+        )
     if "insufficient balance" in raw_lower or "402" in raw_lower:
         return (
             "I ran into a temporary issue on my end. "
@@ -485,12 +491,23 @@ def _strip_trailing_thoughts(history: list[dict]) -> list[dict]:
     return history
 
 
-def _hitl_visibility() -> tuple[Any, Any]:
-    """Visibility for approval button row and travel-info resume hint."""
+def _is_checkpoint_corruption_msg(raw: str) -> bool:
+    """Check if an error message indicates checkpoint corruption."""
+    raw_lower = (raw or "").lower()
+    return "internal state error" in raw_lower or "corrupted state" in raw_lower
+
+
+def _reset_session_for_recovery() -> None:
+    """Generate a new thread id and clear pending interrupts for recovery."""
+    _session["thread_id"] = str(uuid.uuid4())
+    _set_pending_interrupts([])
+
+
+def _hitl_visibility() -> Any:
+    """Visibility for travel-info resume hint (approval is handled in-chat)."""
     pending = _pending_interrupts()
-    is_approval = any(e.get("interrupt_type") == "approval" for e in pending)
     is_info = any(e.get("interrupt_type") == "travel_info_request" for e in pending)
-    return gr.update(visible=is_approval), gr.update(visible=is_info)
+    return gr.update(visible=is_info)
 
 
 def _ui_pack(
@@ -498,8 +515,8 @@ def _ui_pack(
     *,
     clear_msg: bool = True,
 ) -> tuple[Any, ...]:
-    """Standard outputs: chatbot, thread, msg, approval_row, info_row."""
-    approval_vis, info_vis = _hitl_visibility()
+    """Standard outputs: chatbot, thread, msg, info_row."""
+    info_vis = _hitl_visibility()
     has_messages = bool(history)
     placeholder = "" if has_messages else "Book a trip to Zurich next week"
     if clear_msg:
@@ -510,7 +527,6 @@ def _ui_pack(
         history,
         _session.get("thread_id") or "new",
         msg_out,
-        approval_vis,
         info_vis,
     )
 
@@ -630,7 +646,12 @@ def _stream_turn_into_chat(
             yield _ui_pack(history)
 
         elif etype == "error":
-            friendly = _friendly_error_message(event.get("message", ""))
+            raw_msg = event.get("message", "")
+            friendly = _friendly_error_message(raw_msg)
+            if _is_checkpoint_corruption_msg(raw_msg):
+                _reset_session_for_recovery()
+                interrupt_events.clear()
+                saw_interrupt = False
             history = _strip_trailing_thoughts(history)
             history = history + [{"role": "assistant", "content": friendly}]
             final_started = True
@@ -715,7 +736,10 @@ def _process_stream_events(
         )
         yield from _stream_turn_into_chat(history, events)
     except Exception as exc:
-        friendly = _friendly_error_message(str(exc))
+        raw = str(exc)
+        friendly = _friendly_error_message(raw)
+        if _is_checkpoint_corruption_msg(raw) or _is_checkpoint_corruption_msg(friendly):
+            _reset_session_for_recovery()
         history = _strip_trailing_thoughts(history)
         history = history + [{"role": "assistant", "content": friendly}]
         yield _ui_pack(history)
@@ -810,7 +834,10 @@ def _resume_interrupt(
         )
         yield from _stream_turn_into_chat(history, events)
     except Exception as exc:
-        friendly = _friendly_error_message(str(exc))
+        raw = str(exc)
+        friendly = _friendly_error_message(raw)
+        if _is_checkpoint_corruption_msg(raw) or _is_checkpoint_corruption_msg(friendly):
+            _reset_session_for_recovery()
         history = _strip_trailing_thoughts(history)
         history = history + [{"role": "assistant", "content": friendly}]
         yield _ui_pack(history)
@@ -844,7 +871,7 @@ def _new_conversation() -> tuple[Any, ...]:
         [],
         _session["thread_id"],
         gr.update(value="", placeholder="Book a trip to Zurich next week"),
-        *_hitl_visibility(),
+        _hitl_visibility(),
     )
 
 
@@ -875,13 +902,6 @@ _PROCESS_BUBBLE_CSS = """
   background: #e4e8ee !important;
   border-color: #d0d5dd !important;
 }
-#hitl-approval-bar {
-  border: 1px solid #f0c36d;
-  background: #fff8e8;
-  border-radius: 10px;
-  padding: 10px 12px;
-  margin-top: 4px;
-}
 #hitl-info-bar {
   border: 1px solid #93c5fd;
   background: #eff6ff;
@@ -889,29 +909,15 @@ _PROCESS_BUBBLE_CSS = """
   padding: 10px 12px;
   margin-top: 4px;
 }
+#send-row {
+  justify-content: flex-end !important;
+  gap: 8px !important;
+}
+#send-row > div {
+  flex: 0 0 16% !important;
+  max-width: 180px !important;
+}
 """
-
-
-def _gradio_approve(
-    history: list[dict],
-    user_id: str,
-    username: str,
-    passenger_id: str,
-) -> Iterator[tuple[Any, ...]]:
-    yield from _resume_interrupt(
-        "", history, user_id, username, passenger_id, decision="approve"
-    )
-
-
-def _gradio_reject(
-    history: list[dict],
-    user_id: str,
-    username: str,
-    passenger_id: str,
-) -> Iterator[tuple[Any, ...]]:
-    yield from _resume_interrupt(
-        "", history, user_id, username, passenger_id, decision="reject"
-    )
 
 
 def _gradio_resume_submit(
@@ -948,17 +954,9 @@ def create_app() -> gr.Blocks:
             lines=1,
             max_lines=8,
         )
-        with gr.Row():
+        with gr.Row(elem_id="send-row"):
             send_btn = gr.Button("Send", variant="primary")
             new_btn = gr.Button("New Conversation")
-
-        with gr.Group(visible=False, elem_id="hitl-approval-bar") as approval_row:
-            gr.Markdown(
-                "**Action approval required** — confirm or reject the pending operation."
-            )
-            with gr.Row():
-                approve_btn = gr.Button("Approve", variant="primary")
-                reject_btn = gr.Button("Reject", variant="stop")
 
         with gr.Group(visible=False, elem_id="hitl-info-bar") as info_row:
             gr.Markdown(
@@ -979,7 +977,7 @@ def create_app() -> gr.Blocks:
                 label="Thread", value=_session["thread_id"], interactive=False
             )
 
-        chat_outputs = [chatbot, thread, msg, approval_row, info_row]
+        chat_outputs = [chatbot, thread, msg, info_row]
 
         send_btn.click(
             _process_stream_events,
@@ -999,18 +997,6 @@ def create_app() -> gr.Blocks:
             outputs=chat_outputs,
         )
 
-        # Module-level generators (not lambdas / nested fns): Gradio must iterate
-        # yields of 5 outputs; returning a generator object counts as 1 value.
-        approve_btn.click(
-            _gradio_approve,
-            inputs=[chatbot, user_id, username, user_id],
-            outputs=chat_outputs,
-        )
-        reject_btn.click(
-            _gradio_reject,
-            inputs=[chatbot, user_id, username, user_id],
-            outputs=chat_outputs,
-        )
         resume_btn.click(
             _gradio_resume_submit,
             inputs=[resume_input, chatbot, user_id, username, user_id],

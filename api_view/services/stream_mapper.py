@@ -554,6 +554,55 @@ async def _run_post_turn_memory(
         )
 
 
+_CHECKPOINT_CORRUPTION_MARKERS = (
+    "message as a sequence must be",
+    "too many values to unpack",
+)
+
+
+def _is_checkpoint_replay_error(exc: Exception) -> bool:
+    """Detect LangGraph checkpoint replay corruption errors.
+
+    These occur when the Redis checkpointer stores message deltas that
+    fail to deserialize back into ``BaseMessage`` during replay.  The error
+    is persistent: every subsequent call on the same thread re-triggers it.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _CHECKPOINT_CORRUPTION_MARKERS)
+
+
+async def _try_clear_thread_checkpoint(
+    agent: Any, config: dict[str, Any]
+) -> bool:
+    """Best-effort deletion of a corrupted thread's checkpoint data."""
+    try:
+        checkpointer = getattr(agent, "checkpointer", None)
+        if checkpointer is None:
+            return False
+        thread_id = config.get("configurable", {}).get("thread_id", "")
+        if not thread_id:
+            return False
+        await checkpointer.adelete_thread(thread_id)
+        logger.info(
+            "[checkpoint_cleanup] Deleted corrupted checkpoint for thread %s",
+            thread_id,
+        )
+        return True
+    except Exception as cleanup_exc:
+        logger.warning(
+            "[checkpoint_cleanup] Failed to delete corrupted checkpoint: %s",
+            cleanup_exc,
+        )
+        return False
+
+
+_CHECKPOINT_CORRUPTED_MSG = (
+    "I encountered an internal state error in this conversation. "
+    "I've cleared the corrupted state — please send your message "
+    "again to continue with a fresh conversation."
+)
+
+
 async def map_agent_stream(
     agent: Any,
     input_data: Any,
@@ -1052,6 +1101,13 @@ async def map_agent_stream(
                 exc,
                 exc_info=True,
             )
+            if _is_checkpoint_replay_error(exc):
+                # The checkpoint is corrupted — every future call on this
+                # thread will fail.  Clear it now and replace the approval
+                # prompt (if any) with a recovery message.
+                await _try_clear_thread_checkpoint(agent, config)
+                interrupt_events_seen.clear()
+                full_response = _CHECKPOINT_CORRUPTED_MSG
             state = None
 
         # Prefer interrupts already streamed from ``updates``. Only fall back to
@@ -1076,4 +1132,8 @@ async def map_agent_stream(
     except Exception as exc:
         _flush_reasoning("main")
         logger.error("[error] %s", exc, exc_info=True)
-        yield _sse(StreamErrorEvent(message=str(exc)))
+        if _is_checkpoint_replay_error(exc):
+            await _try_clear_thread_checkpoint(agent, config)
+            yield _sse(StreamErrorEvent(message=_CHECKPOINT_CORRUPTED_MSG))
+        else:
+            yield _sse(StreamErrorEvent(message=str(exc)))
