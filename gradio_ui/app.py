@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -21,7 +22,7 @@ client = TravelAPIClient()
 
 # Per-session state (thread_id, pending HITL interrupts)
 _session: dict[str, Any] = {
-    "thread_id": None,
+    "thread_id": str(uuid.uuid4()),
     # One or more interrupt events awaiting resume (LangGraph may pause several at once)
     "pending_interrupts": [],
     "username": DEFAULT_USERNAME,
@@ -415,6 +416,9 @@ def _format_process_event(event: dict[str, Any]) -> str | None:
         return f"**Tool args:**\n```\n{pretty}\n```"
 
     if etype == "tool_result":
+        result_raw = str(event.get("result") or "")
+        if "was cancelled" in result_raw.lower():
+            return None
         name = (event.get("tool_name") or "tool").strip()
         source = (event.get("source") or "").strip()
         label = f" (`{source}`)" if source.endswith("-agent") else ""
@@ -424,7 +428,8 @@ def _format_process_event(event: dict[str, Any]) -> str | None:
         return f"**Tool result**{label} (`{name}`):\n```\n{pretty}\n```"
 
     if etype == "error":
-        return f"**Error:** {event.get('message', '')}"
+        # Errors are handled separately in _stream_turn_into_chat as real replies
+        return None
 
     # Interrupts become a real reply via _build_interrupt_reply — not a thought bubble
     return None
@@ -444,16 +449,40 @@ def _process_chat_message(body: str) -> dict[str, Any]:
     }
 
 
-def _interrupt_status() -> str:
-    """Status string for pending interrupts (thread is shown in User & Session)."""
-    pending = _pending_interrupts()
-    if not pending:
-        return ""
-    types = {e.get("interrupt_type") for e in pending}
-    if "approval" in types:
-        n = len(_collect_approval_actions(pending))
-        return f"⚠️ Waiting for Approve / Reject ({n} change{'s' if n != 1 else ''})"
-    return "⚠️ Waiting for your input"
+def _friendly_error_message(raw: str) -> str:
+    """Convert raw infrastructure errors to customer-friendly text."""
+    raw_lower = (raw or "").lower()
+    if "insufficient balance" in raw_lower or "402" in raw_lower:
+        return (
+            "I ran into a temporary issue on my end. "
+            "Please try again in a moment — your request wasn't completed."
+        )
+    if "rate limit" in raw_lower or "429" in raw_lower:
+        return (
+            "I'm handling too many requests right now. "
+            "Please try again in a moment."
+        )
+    if "timeout" in raw_lower or "timed out" in raw_lower:
+        return (
+            "The request took too long to process. "
+            "Please try again, or simplify your request."
+        )
+    return (
+        "Something went wrong while processing your request. "
+        "Please try again, or rephrase your message."
+    )
+
+
+def _strip_trailing_thoughts(history: list[dict]) -> list[dict]:
+    """Remove trailing 'Working…' thought bubbles so the chat ends with a real reply."""
+    while (
+        history
+        and history[-1].get("role") == "assistant"
+        and "options" not in history[-1]
+        and history[-1].get("metadata", {}).get("title") == "Working…"
+    ):
+        history = history[:-1]
+    return history
 
 
 def _hitl_visibility() -> tuple[Any, Any]:
@@ -469,13 +498,17 @@ def _ui_pack(
     *,
     clear_msg: bool = True,
 ) -> tuple[Any, ...]:
-    """Standard outputs: chatbot, thread, status, msg, approval_row, info_row."""
+    """Standard outputs: chatbot, thread, msg, approval_row, info_row."""
     approval_vis, info_vis = _hitl_visibility()
-    msg_out: Any = "" if clear_msg else gr.update()
+    has_messages = bool(history)
+    placeholder = "" if has_messages else "Book a trip to Zurich next week"
+    if clear_msg:
+        msg_out: Any = gr.update(value="", placeholder=placeholder)
+    else:
+        msg_out = gr.update(placeholder=placeholder)
     return (
         history,
         _session.get("thread_id") or "new",
-        _interrupt_status(),
         msg_out,
         approval_vis,
         info_vis,
@@ -597,23 +630,47 @@ def _stream_turn_into_chat(
             yield _ui_pack(history)
 
         elif etype == "error":
-            msg = f"Error: {event.get('message', '')}"
-            if not final_started:
-                history = history + [
-                    _process_chat_message(f"**Error:** {event.get('message', '')}")
-                ]
-            else:
-                final_text = msg
-                history = _replace_last_assistant(history, final_text)
+            friendly = _friendly_error_message(event.get("message", ""))
+            history = _strip_trailing_thoughts(history)
+            history = history + [{"role": "assistant", "content": friendly}]
+            final_started = True
+            final_text = friendly
             yield _ui_pack(history)
 
     if not saw_interrupt:
         _set_pending_interrupts([])
 
     if final_started:
-        history = _replace_last_assistant(
-            history, _clean_assistant_text(final_text) or final_text
+        cleaned = _clean_assistant_text(final_text) or final_text
+        if not cleaned.strip():
+            cleaned = (
+                "I've finished processing your request. "
+                "Is there anything else you'd like help with?"
+            )
+        history = _replace_last_assistant(history, cleaned)
+
+    # Safety net: ensure the conversation never ends with thought bubbles
+    if not interrupt_events:
+        history = _strip_trailing_thoughts(history)
+        needs_reply = (
+            not history
+            or history[-1].get("role") == "user"
+            or (
+                history[-1].get("role") == "assistant"
+                and "options" not in history[-1]
+                and not final_started
+            )
         )
+        if needs_reply:
+            history = history + [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "I've finished processing your request. "
+                        "Is there anything else you'd like help with?"
+                    ),
+                }
+            ]
 
     # Always close interrupts with a real assistant reply (+ Approve/Reject).
     # Skip if we already attached the HITL bubble when the interrupt arrived.
@@ -658,7 +715,9 @@ def _process_stream_events(
         )
         yield from _stream_turn_into_chat(history, events)
     except Exception as exc:
-        history = history + [_process_chat_message(f"**Error:** {exc}")]
+        friendly = _friendly_error_message(str(exc))
+        history = _strip_trailing_thoughts(history)
+        history = history + [{"role": "assistant", "content": friendly}]
         yield _ui_pack(history)
 
 
@@ -681,7 +740,13 @@ def _resume_interrupt(
     thread_id = _session.get("thread_id")
     history = _strip_options(list(history or []))
     if not thread_id:
-        yield history, gr.update(), "No active thread", gr.update(), *_hitl_visibility()
+        history = history + [
+            {
+                "role": "assistant",
+                "content": "No active conversation. Please start a new conversation.",
+            }
+        ]
+        yield _ui_pack(history)
         return
 
     interrupts = _pending_interrupts()
@@ -692,35 +757,30 @@ def _resume_interrupt(
 
     if approval_events:
         if decision not in ("approve", "reject"):
-            yield (
-                history,
-                gr.update(),
-                "Use Approve or Reject for this action.",
-                gr.update(),
-                *_hitl_visibility(),
-            )
+            history = history + [
+                {
+                    "role": "assistant",
+                    "content": "Please use the Approve or Reject buttons to confirm or cancel this action.",
+                }
+            ]
+            yield _ui_pack(history)
             return
         try:
             resume_value: Any = _approval_resume_payload(decision, approval_events)
         except ValueError as exc:
-            yield (
-                history,
-                gr.update(),
-                str(exc),
-                gr.update(),
-                *_hitl_visibility(),
-            )
+            history = history + [{"role": "assistant", "content": str(exc)}]
+            yield _ui_pack(history)
             return
         resume_label = decision
     else:
         if not (resume_text or "").strip():
-            yield (
-                history,
-                gr.update(),
-                "Enter the missing travel details to resume.",
-                gr.update(),
-                *_hitl_visibility(),
-            )
+            history = history + [
+                {
+                    "role": "assistant",
+                    "content": "Please enter the missing travel details to resume.",
+                }
+            ]
+            yield _ui_pack(history)
             return
         # Travel-info: map by interrupt id when multiple are pending
         if len(info_events) > 1:
@@ -750,7 +810,9 @@ def _resume_interrupt(
         )
         yield from _stream_turn_into_chat(history, events)
     except Exception as exc:
-        history = history + [_process_chat_message(f"**Error:** {exc}")]
+        friendly = _friendly_error_message(str(exc))
+        history = _strip_trailing_thoughts(history)
+        history = history + [{"role": "assistant", "content": friendly}]
         yield _ui_pack(history)
 
 
@@ -776,9 +838,14 @@ def _on_option_select(
 
 
 def _new_conversation() -> tuple[Any, ...]:
-    _session["thread_id"] = None
+    _session["thread_id"] = str(uuid.uuid4())
     _set_pending_interrupts([])
-    return [], "new", "", "", *_hitl_visibility()
+    return (
+        [],
+        _session["thread_id"],
+        gr.update(value="", placeholder="Book a trip to Zurich next week"),
+        *_hitl_visibility(),
+    )
 
 
 # Muted styling for process/thought bubbles only — final replies keep Gradio defaults
@@ -877,14 +944,13 @@ def create_app() -> gr.Blocks:
         )
         msg = gr.Textbox(
             label="Your message",
-            placeholder="e.g. Book a hotel in Paris between 26 and 28 July",
+            placeholder="Book a trip to Zurich next week",
             lines=1,
             max_lines=8,
         )
         with gr.Row():
             send_btn = gr.Button("Send", variant="primary")
             new_btn = gr.Button("New Conversation")
-        status_bar = gr.Textbox(label="Status", interactive=False)
 
         with gr.Group(visible=False, elem_id="hitl-approval-bar") as approval_row:
             gr.Markdown(
@@ -909,9 +975,11 @@ def create_app() -> gr.Blocks:
             with gr.Row():
                 user_id = gr.Textbox(label="User ID", value=DEFAULT_USER_ID)
                 username = gr.Textbox(label="Username", value=DEFAULT_USERNAME)
-            thread = gr.Textbox(label="Thread", value="new", interactive=False)
+            thread = gr.Textbox(
+                label="Thread", value=_session["thread_id"], interactive=False
+            )
 
-        chat_outputs = [chatbot, thread, status_bar, msg, approval_row, info_row]
+        chat_outputs = [chatbot, thread, msg, approval_row, info_row]
 
         send_btn.click(
             _process_stream_events,
@@ -932,7 +1000,7 @@ def create_app() -> gr.Blocks:
         )
 
         # Module-level generators (not lambdas / nested fns): Gradio must iterate
-        # yields of 6 outputs; returning a generator object counts as 1 value.
+        # yields of 5 outputs; returning a generator object counts as 1 value.
         approve_btn.click(
             _gradio_approve,
             inputs=[chatbot, user_id, username, user_id],

@@ -9,9 +9,11 @@ from gradio_ui.app import (
     _build_interrupt_reply,
     _build_interrupt_reply_from_events,
     _format_process_event,
+    _friendly_error_message,
     _normalize_option_decision,
     _pretty_payload,
     _process_chat_message,
+    _strip_trailing_thoughts,
 )
 
 
@@ -139,6 +141,84 @@ def test_skips_tool_reasoning_thinking():
         )
         is None
     )
+
+
+def test_skips_error_and_cancelled_tool_result():
+    """Errors are handled as real replies, not thought bubbles."""
+    assert _format_process_event({"type": "error", "message": "boom"}) is None
+    assert (
+        _format_process_event(
+            {
+                "type": "tool_result",
+                "tool_name": "task",
+                "result": "Tool call task with id call_123 was cancelled",
+            }
+        )
+        is None
+    )
+
+
+def test_friendly_error_masks_insufficient_balance():
+    msg = _friendly_error_message(
+        "Error code: 402 - {'error': {'message': 'Insufficient Balance'}}"
+    )
+    assert "temporary issue" in msg.lower()
+    assert "402" not in msg
+    assert "insufficient" not in msg.lower()
+
+
+def test_friendly_error_masks_rate_limit():
+    msg = _friendly_error_message("Error code: 429 - rate limit exceeded")
+    assert "too many requests" in msg.lower()
+    assert "429" not in msg
+
+
+def test_friendly_error_generic_fallback():
+    msg = _friendly_error_message("Some unknown failure")
+    assert "something went wrong" in msg.lower()
+
+
+def test_strip_trailing_thoughts_removes_working_bubbles():
+    history = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "Calling tool",
+            "metadata": {"title": "Working…"},
+        },
+        {
+            "role": "assistant",
+            "content": "Another step",
+            "metadata": {"title": "Working…"},
+        },
+    ]
+    result = _strip_trailing_thoughts(list(history))
+    assert len(result) == 1
+    assert result[0]["role"] == "user"
+
+
+def test_strip_trailing_thoughts_keeps_real_reply():
+    history = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "Calling tool",
+            "metadata": {"title": "Working…"},
+        },
+        {"role": "assistant", "content": "Here is your answer."},
+    ]
+    result = _strip_trailing_thoughts(list(history))
+    assert len(result) == 3
+    assert result[-1]["content"] == "Here is your answer."
+
+
+def test_strip_trailing_thoughts_keeps_interrupt_options():
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Confirm?", "options": []},
+    ]
+    result = _strip_trailing_thoughts(list(history))
+    assert len(result) == 2
 
 
 def test_process_chat_message_is_thought():
